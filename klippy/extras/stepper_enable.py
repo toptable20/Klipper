@@ -93,9 +93,10 @@ class PrinterStepperEnable:
         toolhead.dwell(DISABLE_STALL_TIME)
         print_time = toolhead.get_last_move_time()
         for el in self.enable_lines.values():
-            el.motor_disable(print_time)
+            if el.stepper.get_name() is not "extruder":
+                el.motor_disable(print_time)
         toolhead.get_kinematics().clear_homing_state("xyz")
-        self.printer.send_event("stepper_enable:motor_off", print_time)
+        # self.printer.send_event("stepper_enable:motor_off", print_time)
         toolhead.dwell(DISABLE_STALL_TIME)
     def motor_debug_enable(self, stepper, enable):
         toolhead = self.printer.lookup_object('toolhead')

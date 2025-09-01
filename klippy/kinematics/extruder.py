@@ -343,6 +343,13 @@ class PrinterExtruder:
         gcode.register_mux_command(cmd="ACTIVATE_EXTRUDER", key="EXTRUDER",
                                    value=self.name, func=self.cmd_ACTIVATE_EXTRUDER,
                                    desc=self.cmd_ACTIVATE_EXTRUDER_help)
+        
+        # Save last temperature for restore temperature after print
+        self.last_temperature = 0
+        gcode.register_command("RESTORE_EXTRUDER_TEMPERATURE", 
+                               self.cmd_RESTORE_EXTRUDER_TEMPERATURE, 
+                               desc=self.cmd_RESTORE_EXTRUDER_TEMPERATURE_help)
+        
     def update_move_time(self, flush_time, clear_history_time):
         # NOTE: "Expire any moves older than `flush_time` from the trapezoid velocity queue"
         self.trapq_finalize_moves(self.trapq, flush_time, clear_history_time)
@@ -492,6 +499,9 @@ class PrinterExtruder:
             extruder = self.printer.lookup_object('toolhead').get_extruder()
         pheaters = self.printer.lookup_object('heaters')
         pheaters.set_temperature(extruder.get_heater(), temp, wait)
+        # Save last temperature for restore temperature after print except when temp=0 (turn off)
+        if temp > 0.:
+            self.last_temperature = temp
     cmd_M109_help = "Set extruder temperature and wait"
     def cmd_M109(self, gcmd):
         # Set Extruder Temperature and Wait
@@ -512,6 +522,13 @@ class PrinterExtruder:
         # NOTE: the following triggers the "_handle_activate_extruder" method
         #       in "gcode_move.py".
         self.printer.send_event("extruder:activate_extruder")
+
+    cmd_RESTORE_EXTRUDER_TEMPERATURE_help = "Restore Extruder Temperature"
+    def cmd_RESTORE_EXTRUDER_TEMPERATURE(self, gcmd):
+        logging.info(f"RESTORE_EXTRUDER_TEMPERATURE: Restoring last temperature of {self.last_temperature}C")
+        extruder = self.printer.lookup_object('toolhead').get_extruder()
+        pheaters = self.printer.lookup_object('heaters')
+        pheaters.set_temperature(extruder.get_heater(), self.last_temperature, wait=False)
 
 # Dummy extruder class used when a printer has no extruder at all
 class DummyExtruder:
