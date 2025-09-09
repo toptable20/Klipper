@@ -61,6 +61,9 @@ def setup_bg_logging(filename, debuglevel):
     global MainQueueHandler
     ql = QueueListener(filename)
     MainQueueHandler = QueueHandler(ql.bg_queue)
+    formatter = logging.Formatter('%(asctime)s [%(filename)s:%(funcName)s()] - %(message)s')
+    MainQueueHandler.setFormatter(formatter)
+    ql.setFormatter(formatter)
     root = logging.getLogger()
     root.addHandler(MainQueueHandler)
     root.setLevel(debuglevel)
