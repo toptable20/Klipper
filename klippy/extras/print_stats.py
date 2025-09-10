@@ -57,6 +57,11 @@ class PrintStats:
         self._note_finish("error", message)
     def note_cancel(self):
         self._note_finish("cancelled")
+    def note_set_temperature(self):
+        self.state = "heating"
+    def note_printing(self):
+        if self.state == "heating":
+            self.state = "printing"
     def _note_finish(self, state, error_message = ""):
         if self.print_start_time is None:
             return

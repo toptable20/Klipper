@@ -107,6 +107,7 @@ class GCodeDispatch:
         self.mux_commands = {}
         self.gcode_help = {}
         self.status_commands = {}
+        self.request_pause_cancel = False
         # Register commands needed before config file is loaded
         handlers = ['M110', 'M112', 'M115',
                     'RESTART', 'FIRMWARE_RESTART', 'ECHO', 'STATUS', 'HELP']
@@ -229,8 +230,21 @@ class GCodeDispatch:
     def run_script_from_command(self, script):
         self._process_commands(script.split('\n'), need_ack=False)
     def run_script(self, script):
+        # logging.info("Running gcode script:\n%s", script)
+        # logging.info("self.mutex: %s", self.mutex.test())
+
+        # additional handling of pause/cancel requests during heating
+        if "CANCEL_PRINT" in script or "PAUSE" in script:
+            self.request_pause_cancel = True
+            # logging.info("Set request_pause_cancel to True")
+        else:
+            self.request_pause_cancel = False
+        
         with self.mutex:
+            # logging.info(f"entered process commands {script}")
             self._process_commands(script.split('\n'), need_ack=False)
+    def get_pause_cancel(self):
+        return self.request_pause_cancel
     def get_mutex(self):
         return self.mutex
     def create_gcode_command(self, command, commandline, params):

@@ -226,6 +226,7 @@ class ControlPID:
             self.prev_temp_integ = temp_integ
     def check_busy(self, eventtime, smoothed_temp, target_temp):
         temp_diff = target_temp - smoothed_temp
+        # logging.info(f"target_temp: {target_temp}, smoothed_temp: {smoothed_temp}, temp_diff: {temp_diff}, prev_temp_deriv: {self.prev_temp_deriv}")
         return (abs(temp_diff) > PID_SETTLE_DELTA
                 or abs(self.prev_temp_deriv) > PID_SETTLE_SLOPE)
 
@@ -254,6 +255,10 @@ class PrinterHeaters:
         gcode.register_command("M105", self.cmd_M105, when_not_ready=True)
         gcode.register_command("TEMPERATURE_WAIT", self.cmd_TEMPERATURE_WAIT,
                                desc=self.cmd_TEMPERATURE_WAIT_help)
+        
+        # get print_stats for temperature wait
+        self.print_stats = self.printer.load_object(config, 'print_stats')
+
     def load_config(self, config):
         self.have_load_sensors = True
         # Load default temperature sensors
@@ -345,11 +350,19 @@ class PrinterHeaters:
         gcode = self.printer.lookup_object("gcode")
         reactor = self.printer.get_reactor()
         eventtime = reactor.monotonic()
+        self.print_stats.note_set_temperature() # activate heating state
         while not self.printer.is_shutdown() and heater.check_busy(eventtime):
+            # logging.info("Waiting for temperature...")
             print_time = toolhead.get_last_move_time()
             gcode.respond_raw(self._get_temp(eventtime))
             eventtime = reactor.pause(eventtime + 1.)
+
+            # check for pause/cancel requests during heating
+            if gcode.get_pause_cancel():
+                logging.info("Temperature wait canceled")
+                break
     def set_temperature(self, heater, temp, wait=False):
+        logging.info(f"set_temperature: {temp}, {wait}")
         toolhead = self.printer.lookup_object('toolhead')
         toolhead.register_lookahead_callback((lambda pt: None))
         heater.set_temp(temp)

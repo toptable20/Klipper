@@ -350,6 +350,9 @@ class PrinterExtruder:
                                self.cmd_RESTORE_EXTRUDER_TEMPERATURE, 
                                desc=self.cmd_RESTORE_EXTRUDER_TEMPERATURE_help)
         
+        # Get print_stats for check heating state
+        self.print_stats = self.printer.load_object(config, 'print_stats')
+        
     def update_move_time(self, flush_time, clear_history_time):
         # NOTE: "Expire any moves older than `flush_time` from the trapezoid velocity queue"
         self.trapq_finalize_moves(self.trapq, flush_time, clear_history_time)
@@ -484,6 +487,7 @@ class PrinterExtruder:
     cmd_M104_help = "Set extruder temperature without waiting"
     def cmd_M104(self, gcmd, wait=False):
         # Set Extruder Temperature
+        logging.info("M104: Set Extruder Temperature")
         temp = gcmd.get_float('S', 0.)
         index = gcmd.get_int('T', None, minval=0)
         if index is not None:
@@ -506,6 +510,8 @@ class PrinterExtruder:
     def cmd_M109(self, gcmd):
         # Set Extruder Temperature and Wait
         self.cmd_M104(gcmd, wait=True)
+        self.print_stats.note_printing()
+        logging.info("M109: wait done")
     cmd_ACTIVATE_EXTRUDER_help = "Change the active extruder"
     def cmd_ACTIVATE_EXTRUDER(self, gcmd):
         toolhead = self.printer.lookup_object('toolhead')
