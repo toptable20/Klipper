@@ -511,7 +511,6 @@ class PrinterExtruder:
         # Set Extruder Temperature and Wait
         self.cmd_M104(gcmd, wait=True)
         self.print_stats.note_printing()
-        logging.info("M109: wait done")
     cmd_ACTIVATE_EXTRUDER_help = "Change the active extruder"
     def cmd_ACTIVATE_EXTRUDER(self, gcmd):
         toolhead = self.printer.lookup_object('toolhead')
