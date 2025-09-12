@@ -229,7 +229,7 @@ class ExtruderHoming:
         #       toolhead object is passed because it has been modified to support homing
         #       the extruder axis too.
         # NOTE: "PrinterHoming.manual_home" then calls "HomingMove.homing_move".
-        logging.info(f"cmd_HOME_EXTRUDER: pos={str(pos)}")
+        # logging.info(f"cmd_HOME_EXTRUDER: pos={str(pos)}")
         phoming.manual_home(toolhead=self.toolhead, endstops=endstops,
                             pos=pos, speed=speed,
                             # NOTE: argument passed to "mcu_endstop.home_start",
@@ -244,7 +244,7 @@ class ExtruderHoming:
         if self.homing_info.retract_dist:
             hp = pos[-1]  # homing position
             sp = startpos[-1]  # start position
-            logging.info(f"cmd_HOME_EXTRUDER: hp={hp}, sp={sp}, retract_dist={self.homing_info.retract_dist}")
+            # logging.info(f"cmd_HOME_EXTRUDER: hp={hp}, sp={sp}, retract_dist={self.homing_info.retract_dist}")
             axes_d = hp - sp
 
             move_d = math.sqrt(axes_d * axes_d)
@@ -339,7 +339,7 @@ class ExtruderHoming:
         # NOTE: flag homing start
         self.homing = True
 
-        logging.info(f"cmd_HOME_EXTRUDER: pos={str(pos)}")
+        # logging.info(f"cmd_HOME_EXTRUDER: pos={str(pos)}")
         phoming.manual_home(toolhead=toolhead, endstops=endstops,
                             pos=pos, speed=speed,
                             # NOTE: argument passed to "mcu_endstop.home_start",
@@ -377,7 +377,7 @@ class ExtruderHoming:
 
         # NOTE: adding a small amount just in case:
         # movepos = 1.1 * movepos  # TODO: check again that this was completely wrong.
-        logging.info(f"get_movepos: movepos={str(movepos)}")
+        # logging.info(f"get_movepos: movepos={str(movepos)}")
 
         # NOTE: movepos will be the target coordinate for the move,
         #       and will also be the final position registered internally.

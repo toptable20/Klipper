@@ -230,7 +230,7 @@ class GCodeDispatch:
     def run_script_from_command(self, script):
         self._process_commands(script.split('\n'), need_ack=False)
     def run_script(self, script):
-        # logging.info("Running gcode script:\n%s", script)
+        # logging.info("Running gcode script: %s", script)
         # logging.info("self.mutex: %s", self.mutex.test())
 
         # additional handling of pause/cancel requests during heating

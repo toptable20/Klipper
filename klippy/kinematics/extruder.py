@@ -151,12 +151,12 @@ class ExtruderStepper:
         # Only check limits if enabled in toolhead and stepper can home
         if self.can_home and move.toolhead.are_limits_enabled():
             # NOTE: Software limit checks, borrowed from "cartesian.py".
-            logging.info(f"extruder_stepper.check_move_limits: checking move ending on epos={epos} and limits={self.limits}")
+            # logging.info(f"extruder_stepper.check_move_limits: checking move ending on epos={epos} and limits={self.limits}")
             if (epos < self.limits[0][0] or epos > self.limits[0][1]):
                 self._check_endstops(move)
         else:
             reason = "E stepper not home-able" if not self.can_home else "limit checks disabled"
-            logging.info(f"extruder_stepper.check_move_limits: {reason}, skipping check on move ending on epos={epos}")
+            # logging.info(f"extruder_stepper.check_move_limits: {reason}, skipping check on move ending on epos={epos}")
 
     def _check_endstops(self, move):
         """ExtruderStepper version of _check_endstops in toolhead.py"""
@@ -184,7 +184,7 @@ class ExtruderStepper:
 
     def set_position(self, newpos_e, homing_e=False, print_time=None):
         """ExtruderStepper version of set_position in toolhead.py"""
-        logging.info(f"ExtruderStepper.set_position: setting E to newpos={newpos_e}.")
+        # logging.info(f"ExtruderStepper.set_position: setting E to newpos={newpos_e}.")
 
         # NOTE: The following calls PrinterRail.set_position, which
         #       calls set_position on each of the MCU_stepper objects
@@ -199,7 +199,7 @@ class ExtruderStepper:
             # NOTE: This will put the axis to a "homed" state, which means that
             #       the unhomed part of the kinematic move check will pass from
             #       now on.
-            logging.info(f"ExtruderStepper: setting limits={self.rail.get_range()} on stepper: {self.rail.get_name()}")
+            # logging.info(f"ExtruderStepper: setting limits={self.rail.get_range()} on stepper: {self.rail.get_name()}")
             self.limits[0] = self.rail.get_range()
 
     def _set_pressure_advance(self, pressure_advance, smooth_time):
@@ -386,7 +386,7 @@ class PrinterExtruder:
         # NOTE: other extrusion checks.
         if (not move.axes_d[0] and not move.axes_d[1]) or axis_r < 0. or self.symmetric:
             # Extrude only move (or retraction move) - limit accel and velocity
-            logging.info(f"PrinterExtruder.check_move: retraction move or E-only move. Limiting move speed and acceleration.")
+            # logging.info(f"PrinterExtruder.check_move: retraction move or E-only move. Limiting move speed and acceleration.")
             if abs(move.axes_d[-1]) > self.max_e_dist:
                 raise self.printer.command_error(
                     "Extrude only move too long (%.3fmm vs %.3fmm)\n"
@@ -419,7 +419,7 @@ class PrinterExtruder:
             toolhead = self.printer.lookup_object('toolhead')
             print_time = toolhead.print_time
 
-        logging.info(f"PrinterExtruder.set_position: called with newpos_e={newpos_e} homing_axes={homing_axes} and self.axis_idx={self.axis_idx}.")
+        # logging.info(f"PrinterExtruder.set_position: called with newpos_e={newpos_e} homing_axes={homing_axes} and self.axis_idx={self.axis_idx}.")
 
         # Set the TRAPQ's position
         self.trapq_set_position(self.trapq, print_time, newpos_e, 0., 0.)
@@ -473,7 +473,7 @@ class PrinterExtruder:
                           1., can_pressure_advance, 0.,
                           start_v, cruise_v, accel)
         self.last_position = move.end_pos[-1]
-        logging.info(f"extruder: move.end_pos[-1]={str(move.end_pos[-1])}")
+        # logging.info(f"extruder: move.end_pos[-1]={str(move.end_pos[-1])}")
     def find_past_position(self, print_time):
         if self.extruder_stepper is None:
             return 0.
