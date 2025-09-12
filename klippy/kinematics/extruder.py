@@ -84,6 +84,10 @@ class ExtruderStepper:
         gcode.register_mux_command("SYNC_EXTRUDER_MOTION", "EXTRUDER",
                                    self.name, self.cmd_SYNC_EXTRUDER_MOTION,
                                    desc=self.cmd_SYNC_EXTRUDER_MOTION_help)
+        
+        # save extruder position at idle start
+        self.idletimeout = self.printer.lookup_object("idle_timeout")
+
     def _handle_connect(self):
         toolhead: ToolHead = self.printer.lookup_object('toolhead')
         toolhead.register_step_generator(self.stepper.generate_steps)
@@ -162,8 +166,14 @@ class ExtruderStepper:
         """ExtruderStepper version of _check_endstops in toolhead.py"""
 
         # NOTE: Software limit checks, borrowed from "cartesian.py".
-        logging.info(f"extruder endstop check: move limit check triggered.")
+        # logging.info(f"extruder endstop check: move limit check triggered.")
         end_pos = move.end_pos[-1]
+
+        logging.info(f"idletimeout state: {self.idletimeout.get_status(0)['state']}, gcode pos: {self.idletimeout.get_last_e_position()}")
+        if self.idletimeout.get_idle_timeout_active():
+            self.set_position(newpos_e=self.idletimeout.get_last_e_position(), homing_e=True)
+            # logging.info(f"extruder endstop check: idle timeout active, allowing move to {end_pos} on axis {len(move.end_pos)}.")
+            self.idletimeout.set_idle_timeout_active(False)
 
         # NOTE: Check if the extruder move is out of bounds.
         if (move.axes_d[-1] and (end_pos < self.limits[0][0] or end_pos > self.limits[0][1])):

@@ -31,6 +31,21 @@ class IdleTimeout:
                                     desc=self.cmd_SET_IDLE_TIMEOUT_help)
         self.state = "Idle"
         self.last_print_start_systime = 0.
+
+        # save extruder position at idle state
+        self.last_e_position = 0.0
+        self.gcodemove = self.printer.lookup_object("gcode_move")
+        self.idle_timeout_active = False
+
+    def get_last_e_position(self):
+        return self.last_e_position
+    
+    def get_idle_timeout_active(self):
+        return self.idle_timeout_active
+    
+    def set_idle_timeout_active(self, active: bool):
+        self.idle_timeout_active = active
+
     def get_status(self, eventtime):
         printing_time = 0.
         if self.state == "Printing":
@@ -44,7 +59,9 @@ class IdleTimeout:
     def transition_idle_state(self, eventtime):
         self.state = "Printing"
         try:
+            self.idle_timeout_active = True
             script = self.idle_gcode.render()
+            self.last_e_position = self.gcodemove.get_internal_pose()[-1]
             self.gcode.run_script(script)
         except:
             logging.exception("idle timeout gcode execution")

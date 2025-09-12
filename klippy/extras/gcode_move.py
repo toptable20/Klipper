@@ -286,5 +286,8 @@ class GCodeMove:
                           % (mcu_pos, stepper_pos, kin_pos, toolhead_pos,
                              gcode_pos, base_pos, homing_pos))
 
+    def get_internal_pose(self):
+        return self.last_position
+    
 def load_config(config):
     return GCodeMove(config)
