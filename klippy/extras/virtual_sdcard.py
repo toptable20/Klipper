@@ -46,6 +46,9 @@ class VirtualSD:
         self.gcode.register_command(
             "SDCARD_PRINT_FILE", self.cmd_SDCARD_PRINT_FILE,
             desc=self.cmd_SDCARD_PRINT_FILE_help)
+        
+        self.calc_print_time = self.printer.load_object(config, 'print_time_calc')
+
     def handle_shutdown(self):
         if self.work_timer is not None:
             self.must_pause_work = True
@@ -89,7 +92,7 @@ class VirtualSD:
             except:
                 logging.exception("virtual_sdcard get_file_list")
                 raise self.gcode.error("Unable to get file list")
-    def get_status(self, eventtime):
+    def get_status(self, eventtime=None):
         return {
             'file_path': self.file_path(),
             'progress': self.progress(),

@@ -17,6 +17,8 @@ class PrintStats:
             desc=self.cmd_SET_PRINT_STATS_INFO_help)
         printer.register_event_handler("extruder:activate_extruder",
                                        self._handle_activate_extruder)
+        self.calc_print_time = printer.load_object(config, 'print_time_calc')
+        self.total_time = 0.0
     def _handle_activate_extruder(self):
         gc_status = self.gcode_move.get_status()
         self.last_epos = gc_status['position'].e
@@ -42,6 +44,7 @@ class PrintStats:
         gc_status = self.gcode_move.get_status(curtime)
         self.last_epos = gc_status['position'].e
         self.state = "printing"
+        self.get_calc_print_time()
         self.error_message = ""
     def note_pause(self):
         if self.last_pause_time is None:
@@ -119,12 +122,15 @@ class PrintStats:
             'filename': self.filename,
             'total_duration': self.total_duration,
             'print_duration': print_duration,
+            'total_time': self.total_time,            
             'filament_used': self.filament_used,
             'state': self.state,
             'message': self.error_message,
             'info': {'total_layer': self.info_total_layer,
                      'current_layer': self.info_current_layer}
         }
+    def get_calc_print_time(self):
+        self.total_time = self.calc_print_time.calc_time(build_layers = True)
 
 def load_config(config):
     return PrintStats(config)
