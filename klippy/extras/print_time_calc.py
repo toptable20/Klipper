@@ -164,6 +164,7 @@ class CalcPrintTime:
                     layer_callback = None):
         """Checks for imperial/relativeness settings and tool changes"""
 
+        self.init_values()
         self.virtual_sd = self.printer.lookup_object('virtual_sdcard', None)
         # logging.info(f"self.virtual_sd: {self.virtual_sd}")
 
