@@ -10,8 +10,8 @@ class CommandError(Exception):
 
 # WARNING:  In the klipper-for-cnc fork, the extruder axis is always in the last position.
 #           Here it is placed in the fourth position (which is only also the last in the XYZ 3-axis setup).
-Coord = collections.namedtuple('Coord', ('x', 'y', 'z', 'a', 'b', 'c', 'e'), 
-                               defaults = (0,0,0,0,0,0,0))
+Coord = collections.namedtuple('Coord', ('x', 'y', 'z', 'e'), 
+                               defaults = (0,0,0,0))
 
 class GCodeCommand:
     error = CommandError
