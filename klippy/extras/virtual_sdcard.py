@@ -76,6 +76,7 @@ class VirtualSD:
                     ext = name[name.rfind('.')+1:]
                     if ext not in VALID_GCODE_EXTS:
                         continue
+                    logging.info(f"Found file in subdir: {name}")
                     full_path = os.path.join(root, name)
                     r_path = full_path[len(self.sdcard_dirname) + 1:]
                     size = os.path.getsize(full_path)
@@ -184,7 +185,16 @@ class VirtualSD:
         fname = filename
         try:
             if fname not in flist:
-                fname = files_by_lower[fname.lower()]
+                fname_lower = fname.lower()
+                if fname_lower in files_by_lower:
+                    fname = files_by_lower[fname_lower]
+                else:
+                    candidates = [f for f in flist if f.lower().endswith('/' + fname_lower) or f.lower() == fname_lower]
+                    if candidates:
+                        fname = candidates[0]
+                    else:
+                        raise gcmd.error("File not found")
+                
             fname = os.path.join(self.sdcard_dirname, fname)
             f = io.open(fname, 'r', newline='')
             f.seek(0, os.SEEK_END)
