@@ -4,6 +4,8 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import os, sys, logging, io
+import re
+import datetime
 
 VALID_GCODE_EXTS = ['gcode', 'g', 'gco']
 
@@ -49,6 +51,8 @@ class VirtualSD:
         
         self.calc_print_time = self.printer.load_object(config, 'print_time_calc')
 
+        self.bed_center_calibration = self.printer.load_object(config, 'bed_center_calibration')
+
     def handle_shutdown(self):
         if self.work_timer is not None:
             self.must_pause_work = True
@@ -76,7 +80,6 @@ class VirtualSD:
                     ext = name[name.rfind('.')+1:]
                     if ext not in VALID_GCODE_EXTS:
                         continue
-                    logging.info(f"Found file in subdir: {name}")
                     full_path = os.path.join(root, name)
                     r_path = full_path[len(self.sdcard_dirname) + 1:]
                     size = os.path.getsize(full_path)
@@ -151,10 +154,74 @@ class VirtualSD:
     cmd_SDCARD_PRINT_FILE_help = "Loads a SD file and starts the print.  May "\
         "include files in subdirectories."
     def cmd_SDCARD_PRINT_FILE(self, gcmd):
+        logging.info("SDCARD_PRINT_FILE command received")
         if self.work_timer is not None:
             raise gcmd.error("SD busy")
+        
         self._reset_file()
         filename = gcmd.get("FILENAME")
+        
+        if self.print_stats.get_bed_center_calibration():
+            logging.info("Bed center calibration required before print start")
+            calib_coord = self.bed_center_calibration.calc_calib_coord()
+            if calib_coord is None:
+                raise gcmd.error("Bed center calibration failed")
+            elif "Failed" in calib_coord:
+                raise gcmd.error(calib_coord)
+
+            logging.info(f"Calibrated coord: {calib_coord}")
+            
+            pattern_x = re.compile(r"X([-+]?\d*\.?\d+)")
+            pattern_y = re.compile(r"Y([-+]?\d*\.?\d+)")
+
+            inputfile = os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", filename)
+            base, ext = os.path.splitext(filename)
+            outputfilename = f"{base}_calib{ext}"
+            
+            if not os.path.exists(os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", "calib")):
+                os.makedirs(os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", "calib"))
+            outputfile = os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", "calib", outputfilename)
+
+            modified_lines = []
+            printer_center = 130.0, 140.0
+            with open(inputfile, "r", encoding="utf-8") as f:
+                first_line = f.readline()
+                if first_line.startswith('; calibrated data by bed center calibration'):
+                    logging.info("Already calibrated file detected. Aborting to prevent double calibration.")
+                    os.remove(outputfile)
+
+                else:
+                    lines = f.readlines()
+                        
+                    for line in lines:
+                        if line.startswith(("G0", "G1")):
+                            new_line = line
+
+                            match_x = pattern_x.search(line)
+                            if match_x:
+                                x_val = float(match_x.group(1))
+                                new_x = calib_coord[0][0][0] - printer_center[0] + x_val
+                                new_line = pattern_x.sub(f"X{new_x:.3f}", new_line)
+
+                            match_y = pattern_y.search(line)
+                            if match_y:
+                                y_val = float(match_y.group(1))
+                                new_y = calib_coord[0][0][1] - printer_center[1] + y_val
+                                new_line = pattern_y.sub(f"Y{new_y:.3f}", new_line)
+
+                            modified_lines.append(new_line)
+                        else:
+                            modified_lines.append(line)
+                    
+                    with open(outputfile, "w", encoding="utf-8") as f:
+                        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        f.write(f'; calibrated data by bed center calibration ({now})\n')
+                        f.writelines(modified_lines)
+
+                    filename = outputfilename
+        
+        logging.info(f"Loading file: {filename}")
+
         if filename[0] == '/':
             filename = filename[1:]
         self._load_file(gcmd, filename, check_subdirs=True)
@@ -170,6 +237,7 @@ class VirtualSD:
         # Initialize SD card
         gcmd.respond_raw("SD card ok")
     def cmd_M23(self, gcmd):
+        logging.info("M23 command received")
         # Select SD file
         if self.work_timer is not None:
             raise gcmd.error("SD busy")

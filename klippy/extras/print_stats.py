@@ -4,6 +4,8 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
+import logging
+
 class PrintStats:
     def __init__(self, config):
         printer = config.get_printer()
@@ -19,6 +21,12 @@ class PrintStats:
                                        self._handle_activate_extruder)
         self.calc_print_time = printer.load_object(config, 'print_time_calc')
         self.total_time = 0.0
+
+        self.need_bed_center_calibration = 0
+        self.gcode.register_command(
+            "SET_BED_CENTER_CALIBRATION", self.cmd_SET_BED_CENTER_CALIBRATION,
+            desc=self.cmd_SET_BED_CENTER_CALIBRATION_help)
+
     def _handle_activate_extruder(self):
         gc_status = self.gcode_move.get_status()
         self.last_epos = gc_status['position'].e
@@ -95,6 +103,15 @@ class PrintStats:
                 current_layer is not None and \
                 current_layer != self.info_current_layer:
             self.info_current_layer = min(current_layer, self.info_total_layer)
+
+    cmd_SET_BED_CENTER_CALIBRATION_help = "Enable or disable bed center " \
+                                         "calibration requirement for print start"
+    def cmd_SET_BED_CENTER_CALIBRATION(self, gcmd):
+        self.need_bed_center_calibration = gcmd.get_int("ENABLE", self.need_bed_center_calibration, minval = 0)
+        logging.info("Set bed center calibration to %d", self.need_bed_center_calibration)
+    def get_bed_center_calibration(self):
+        return self.need_bed_center_calibration
+
     def reset(self):
         self.filename = self.error_message = ""
         self.state = "standby"
@@ -126,6 +143,7 @@ class PrintStats:
             'filament_used': self.filament_used,
             'state': self.state,
             'message': self.error_message,
+            'bed_center_calibration_active': self.need_bed_center_calibration,
             'info': {'total_layer': self.info_total_layer,
                      'current_layer': self.info_current_layer}
         }
