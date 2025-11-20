@@ -6,6 +6,7 @@
 import os, sys, logging, io
 import re
 import datetime
+import time
 
 VALID_GCODE_EXTS = ['gcode', 'g', 'gco']
 
@@ -52,6 +53,8 @@ class VirtualSD:
         self.calc_print_time = self.printer.load_object(config, 'print_time_calc')
 
         self.bed_center_calibration = self.printer.load_object(config, 'bed_center_calibration')
+        self.file_name = None
+        self.gcode_move = self.printer.load_object(config, 'gcode_move')
 
     def handle_shutdown(self):
         if self.work_timer is not None:
@@ -160,67 +163,93 @@ class VirtualSD:
         
         self._reset_file()
         filename = gcmd.get("FILENAME")
+        self.file_name = filename
         
-        if self.print_stats.get_bed_center_calibration():
-            logging.info("Bed center calibration required before print start")
-            calib_coord = self.bed_center_calibration.calc_calib_coord()
-            if calib_coord is None:
-                raise gcmd.error("Bed center calibration failed")
-            elif "Failed" in calib_coord:
-                raise gcmd.error(calib_coord)
+        # if self.print_stats.get_bed_center_calibration():
+        #     logging.info("Bed center calibration required before print start")
 
-            logging.info(f"Calibrated coord: {calib_coord}")
+        #     # mutex lock to prevent gcode command conflict
+        #     self.gcode.get_mutex().__exit__()
             
-            pattern_x = re.compile(r"X([-+]?\d*\.?\d+)")
-            pattern_y = re.compile(r"Y([-+]?\d*\.?\d+)")
-
-            inputfile = os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", filename)
-            base, ext = os.path.splitext(filename)
-            outputfilename = f"{base}_calib{ext}"
+        #     # move to capture point
+        #     self.gcode._process_commands("G28".split("\n"), need_ack=False)
+        #     while self.printer.lookup_object('toolhead').is_busy():
+        #         self.reactor.pause(self.reactor.monotonic() + 0.1)
             
-            if not os.path.exists(os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", "calib")):
-                os.makedirs(os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", "calib"))
-            outputfile = os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", "calib", outputfilename)
+        #     self.gcode._process_commands("G1 X-25 Y100 Z90 F3000".split("\n")   , need_ack=False)
+        #     while self.printer.lookup_object('toolhead').is_busy():
+        #         self.reactor.pause(self.reactor.monotonic() + 0.1)
+            
+        #     logging.info("Positioned for bed center calibration")
 
-            modified_lines = []
-            printer_center = 130.0, 140.0
-            with open(inputfile, "r", encoding="utf-8") as f:
-                first_line = f.readline()
-                if first_line.startswith('; calibrated data by bed center calibration'):
-                    logging.info("Already calibrated file detected. Aborting to prevent double calibration.")
-                    os.remove(outputfile)
+        #     while True:
+        #         if self.gcode.get_mutex():
+        #             logging.info("Gcode mutex locked for bed center calibration")
+        #             time.sleep(0.5)
+        #         else:
+        #             break
 
-                else:
-                    lines = f.readlines()
+        #     calib_coord = self.bed_center_calibration.calc_calib_coord()
+        #     if calib_coord is None:
+        #         raise gcmd.error("Bed center calibration failed")
+        #     elif "Failed" in calib_coord:
+        #         raise gcmd.error(calib_coord)
+
+        #     logging.info(f"Calibrated coord: {calib_coord}")
+            
+        #     pattern_x = re.compile(r"X([-+]?\d*\.?\d+)")
+        #     pattern_y = re.compile(r"Y([-+]?\d*\.?\d+)")
+
+        #     inputfile = os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", filename)
+        #     base, ext = os.path.splitext(filename)
+        #     outputfilename = f"{base}_calib{ext}"
+            
+        #     if not os.path.exists(os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", "calib")):
+        #         os.makedirs(os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", "calib"))
+        #     outputfile = os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", "calib", outputfilename)
+
+        #     modified_lines = []
+        #     printer_center = 102.5, 102.5
+        #     with open(inputfile, "r", encoding="utf-8") as f:
+        #         first_line = f.readline()
+        #         if first_line.startswith('; calibrated data by bed center calibration'):
+        #             logging.info("Already calibrated file detected. Aborting to prevent double calibration.")
+        #             os.remove(outputfile)
+
+        #         else:
+        #             lines = f.readlines()
                         
-                    for line in lines:
-                        if line.startswith(("G0", "G1")):
-                            new_line = line
+        #             for line in lines:
+        #                 if line.startswith(("G0", "G1")):
+        #                     new_line = line
 
-                            match_x = pattern_x.search(line)
-                            if match_x:
-                                x_val = float(match_x.group(1))
-                                new_x = calib_coord[0][0][0] - printer_center[0] + x_val
-                                new_line = pattern_x.sub(f"X{new_x:.3f}", new_line)
+        #                     match_x = pattern_x.search(line)
+        #                     if match_x:
+        #                         x_val = float(match_x.group(1))
+        #                         new_x = calib_coord[0][0][0] - printer_center[0] + x_val
+        #                         new_line = pattern_x.sub(f"X{new_x:.3f}", new_line)
 
-                            match_y = pattern_y.search(line)
-                            if match_y:
-                                y_val = float(match_y.group(1))
-                                new_y = calib_coord[0][0][1] - printer_center[1] + y_val
-                                new_line = pattern_y.sub(f"Y{new_y:.3f}", new_line)
+        #                     match_y = pattern_y.search(line)
+        #                     if match_y:
+        #                         y_val = float(match_y.group(1))
+        #                         new_y = calib_coord[0][0][1] - printer_center[1] + y_val
+        #                         new_line = pattern_y.sub(f"Y{new_y:.3f}", new_line)
 
-                            modified_lines.append(new_line)
-                        else:
-                            modified_lines.append(line)
+        #                     modified_lines.append(new_line)
+        #                 else:
+        #                     modified_lines.append(line)
                     
-                    with open(outputfile, "w", encoding="utf-8") as f:
-                        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        f.write(f'; calibrated data by bed center calibration ({now})\n')
-                        f.writelines(modified_lines)
+        #             with open(outputfile, "w", encoding="utf-8") as f:
+        #                 new_first_line = f'; calibrated data by bed center calibration ({datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")})\n'
+        #                 modified_lines = [new_first_line] + modified_lines
+        #                 f.writelines(modified_lines)
 
-                    filename = outputfilename
+        #             filename = outputfilename
         
-        logging.info(f"Loading file: {filename}")
+        # logging.info(f"Loading file: {filename}")
+
+        # # back to home position before print start
+        # self.gcode.run_script("G1 X-100 Y205 Z10 F3000")
 
         if filename[0] == '/':
             filename = filename[1:]
@@ -304,6 +333,94 @@ class VirtualSD:
         return self.cmd_from_sd
     # Background work timer
     def work_handler(self, eventtime):
+        error_message = None
+
+        if self.print_stats.get_bed_center_calibration():
+            logging.info("Bed center calibration required before print start")
+
+            # mutex lock to prevent gcode command conflict
+            # self.gcode.get_mutex().__exit__()
+            
+            # move to capture point
+            self.gcode._process_commands("G28\nG91\nG1 E-50\nG90\nG1 X-25 Y100 Z95 F3000\n".split("\n"), need_ack=True)
+            if self.gcode.get_mutex():
+                logging.info("waiting for gcode mutex to release for bed center calibration2")
+                self.reactor.pause(self.reactor.monotonic() + 15.0)
+
+            logging.info("Positioned for bed center calibration")
+
+            calib_coord = self.bed_center_calibration.calc_calib_coord()
+            if calib_coord is None:
+                error_message = "Bed center calibration failed"
+                # raise gcmd.error("Bed center calibration failed")
+            elif "Failed" in calib_coord:
+                error_message = calib_coord
+                # raise gcmd.error(calib_coord)
+
+            logging.info(f"Calibrated coord: {calib_coord}")
+            logging.info(f"calib_coord[0]: {calib_coord[0]}, calib_coord[1]: {calib_coord[1]}")
+
+            if error_message is not None:
+                self.work_timer = None
+                self.gcode.respond_raw(f"Error: {error_message}")
+                return self.reactor.NEVER
+            
+            pattern_x = re.compile(r"X([-+]?\d*\.?\d+)")
+            pattern_y = re.compile(r"Y([-+]?\d*\.?\d+)")
+
+            inputfile = os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", self.file_name)
+            base, ext = os.path.splitext(self.file_name)
+            outputfilename = f"{base}_calib{ext}"
+            
+            if not os.path.exists(os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", "calib")):
+                os.makedirs(os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", "calib"))
+            outputfile = os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", "calib", outputfilename)
+
+            modified_lines = []
+            printer_center = 102.5, 102.5
+            with open(inputfile, "r", encoding="utf-8") as f:
+                first_line = f.readline()
+                if first_line.startswith('; calibrated data by bed center calibration'):
+                    logging.info("Already calibrated file detected. Aborting to prevent double calibration.")
+                    os.remove(outputfile)
+
+                else:
+                    lines = f.readlines()
+                        
+                    for line in lines:
+                        if line.startswith(("G0", "G1")):
+                            new_line = line
+
+                            match_x = pattern_x.search(line)
+                            if match_x:
+                                x_val = float(match_x.group(1))
+                                new_x = calib_coord[0] - printer_center[0] + x_val
+                                new_line = pattern_x.sub(f"X{new_x:.3f}", new_line)
+
+                            match_y = pattern_y.search(line)
+                            if match_y:
+                                y_val = float(match_y.group(1))
+                                new_y = calib_coord[1] - printer_center[1] + y_val
+                                new_line = pattern_y.sub(f"Y{new_y:.3f}", new_line)
+
+                            modified_lines.append(new_line)
+                        else:
+                            modified_lines.append(line)
+                    
+                    with open(outputfile, "w", encoding="utf-8") as f:
+                        new_first_line = f'; calibrated data by bed center calibration ({datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")})\n'
+                        modified_lines = [new_first_line] + modified_lines
+                        f.writelines(modified_lines)
+
+                    filename = outputfilename
+
+                    self._load_file(self.gcode, filename, check_subdirs=True)
+        
+                    logging.info(f"Loading file: {filename}")
+
+            # back to home position before print start
+            self.gcode.run_script("G1 X-100 Y205 Z10 E0 F3000")
+
         logging.info("Starting SD card print (position %d)", self.file_position)
         self.reactor.unregister_timer(self.work_timer)
         try:
@@ -316,7 +433,7 @@ class VirtualSD:
         gcode_mutex = self.gcode.get_mutex()
         partial_input = ""
         lines = []
-        error_message = None
+        
         while not self.must_pause_work:
             if not lines:
                 # Read more data
