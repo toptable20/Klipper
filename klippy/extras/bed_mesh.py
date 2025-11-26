@@ -347,6 +347,10 @@ class BedMeshCalibrate:
         self.gcode.register_command(
             'BED_MESH_CALIBRATE', self.cmd_BED_MESH_CALIBRATE,
             desc=self.cmd_BED_MESH_CALIBRATE_help)
+        
+        self.bed_center_calibration = self.printer.load_object(config, 'bed_center_calibration')
+        self.print_stats = self.printer.load_object(config, 'print_stats')
+        
     def print_generated_points(self, print_func, truncate=False):
         x_offset = y_offset = 0.
         probe = self.printer.lookup_object('probe', None)
@@ -568,6 +572,17 @@ class BedMeshCalibrate:
         self.mesh_max = self.orig_config['mesh_max']
         for key in list(self.mesh_config.keys()):
             self.mesh_config[key] = self.orig_config[key]
+
+        eventtime = self.printer.get_reactor().monotonic()
+        if self.print_stats.get_bed_center_calibration() and self.print_stats.get_status(eventtime)['state'] == 'printing':
+            bed_center = self.bed_center_calibration.moving_avg_center
+            # bed_center = 100, 100 # dummy value for now
+            logging.info(
+                "bed_mesh: Overriding MESH_ORIGIN with "
+                "bed_center_calibration values: (%.2f, %.2f)"
+                % (bed_center[0], bed_center[1])
+            )
+            self.origin = bed_center
 
         params = gcmd.get_command_parameters()
         need_cfg_update = False
