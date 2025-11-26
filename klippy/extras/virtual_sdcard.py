@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import os, sys, logging, io
 import re
+import shutil
 import datetime
 import time
 
@@ -163,94 +164,99 @@ class VirtualSD:
         
         self._reset_file()
         filename = gcmd.get("FILENAME")
-        self.file_name = filename
         
-        # if self.print_stats.get_bed_center_calibration():
-        #     logging.info("Bed center calibration required before print start")
 
-        #     # mutex lock to prevent gcode command conflict
-        #     self.gcode.get_mutex().__exit__()
+        stop_marker = "G21 ; set units to millimeters"
+        logging.info(f"Purge on print start? check purge: {self.print_stats.get_purge_on_print_start()}")
+        logging.info(f"Bed mesh on print start? check purge: {self.print_stats.get_bed_mesh_on_print_start()}")
+        target_pattern = r"(G28\s*\n\s*M82\s*\n\s*G92\s+E0)"
+        active_pattern = target_pattern + r"\s*\n\s*PURGE_SEQUENCE"
+        commented_pattern = target_pattern + r"\s*\n\s*;\s*PURGE_SEQUENCE"
+
+        insert_code_name = "BED_MESH_PROFILE LOAD=default"
+        re_custom_active = fr"(\n\s*){insert_code_name}"
+        re_custom_commented = fr"(\n\s*);\s*{insert_code_name}"
+
+        NUM = r"[-]?\d+(?:\.\d+)?"
+        raw_block = fr"(?:G1\s+Z{NUM}\s+F{NUM}\s*\n\s*G1\s+X{NUM}\s+Z{NUM}\s+F{NUM}|G1\s+X{NUM}\s+Z{NUM}\s+F{NUM}\s*\n\s*G1\s+Z{NUM}\s+F{NUM})\s*\n\s*G92\s+Z0"
+        
+        re_anchor_active = fr"({raw_block})"
+        re_anchor_commented = fr"((?:;\s*G1.+\n)+;\s*G92\s+Z0)"
+
+        def make_comment(text): 
+            return "; " + text.replace("\n", "\n; ")
             
-        #     # move to capture point
-        #     self.gcode._process_commands("G28".split("\n"), need_ack=False)
-        #     while self.printer.lookup_object('toolhead').is_busy():
-        #         self.reactor.pause(self.reactor.monotonic() + 0.1)
-            
-        #     self.gcode._process_commands("G1 X-25 Y100 Z90 F3000".split("\n")   , need_ack=False)
-        #     while self.printer.lookup_object('toolhead').is_busy():
-        #         self.reactor.pause(self.reactor.monotonic() + 0.1)
-            
-        #     logging.info("Positioned for bed center calibration")
+        def remove_comment(text):
+            return re.sub(r"^\s*;\s*", "", text, flags=re.MULTILINE)
 
-        #     while True:
-        #         if self.gcode.get_mutex():
-        #             logging.info("Gcode mutex locked for bed center calibration")
-        #             time.sleep(0.5)
-        #         else:
-        #             break
-
-        #     calib_coord = self.bed_center_calibration.calc_calib_coord()
-        #     if calib_coord is None:
-        #         raise gcmd.error("Bed center calibration failed")
-        #     elif "Failed" in calib_coord:
-        #         raise gcmd.error(calib_coord)
-
-        #     logging.info(f"Calibrated coord: {calib_coord}")
-            
-        #     pattern_x = re.compile(r"X([-+]?\d*\.?\d+)")
-        #     pattern_y = re.compile(r"Y([-+]?\d*\.?\d+)")
-
-        #     inputfile = os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", filename)
-        #     base, ext = os.path.splitext(filename)
-        #     outputfilename = f"{base}_calib{ext}"
-            
-        #     if not os.path.exists(os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", "calib")):
-        #         os.makedirs(os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", "calib"))
-        #     outputfile = os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", "calib", outputfilename)
-
-        #     modified_lines = []
-        #     printer_center = 102.5, 102.5
-        #     with open(inputfile, "r", encoding="utf-8") as f:
-        #         first_line = f.readline()
-        #         if first_line.startswith('; calibrated data by bed center calibration'):
-        #             logging.info("Already calibrated file detected. Aborting to prevent double calibration.")
-        #             os.remove(outputfile)
-
-        #         else:
-        #             lines = f.readlines()
+        inputfile = os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", filename)
+        outputname = f"modified_{os.path.basename(filename)}"
+        outputfile = os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", outputname)
+        try:
+            with open(inputfile, "r", encoding="utf-8") as f_in, \
+                open(outputfile, "w", encoding="utf-8") as f_out:
+                header_lines = []
+                marker_found = False
+                while True:
+                    line = f_in.readline()
+                    if not line: break
+                    header_lines.append(line)
+                    if stop_marker in line:
+                        marker_found = True
+                        break
                         
-        #             for line in lines:
-        #                 if line.startswith(("G0", "G1")):
-        #                     new_line = line
+                content = "".join(header_lines)           
+                if self.print_stats.get_purge_on_print_start():     
+                    if re.search(active_pattern, content):
+                        logging.info("Patched pattern found, no need to insert purge code")
+                    elif re.search(commented_pattern, content):
+                        logging.info("Commented pattern found, restoring purge code")
+                        content = re.sub(commented_pattern, r"\1\nPURGE_SEQUENCE", content, count=1)
+                    elif re.search(target_pattern, content):
+                        logging.info("Target pattern found, inserting purge code")
+                        content = re.sub(target_pattern, r"\1\nPURGE_SEQUENCE", content, count=1)
+                    else:
+                        logging.info("Target pattern not found, writing header unchanged")
 
-        #                     match_x = pattern_x.search(line)
-        #                     if match_x:
-        #                         x_val = float(match_x.group(1))
-        #                         new_x = calib_coord[0][0][0] - printer_center[0] + x_val
-        #                         new_line = pattern_x.sub(f"X{new_x:.3f}", new_line)
+                else:
+                    if re.search(active_pattern, content):
+                        logging.info("Active purge pattern found, commenting out purge code")
+                        content = re.sub(active_pattern, r"\1\n; PURGE_SEQUENCE", content, count=1)
+                    elif re.search(commented_pattern, content):
+                        logging.info("Commented purge pattern found, no need to change")
+                    else:
+                        logging.info("No purge pattern found, writing header unchanged")
 
-        #                     match_y = pattern_y.search(line)
-        #                     if match_y:
-        #                         y_val = float(match_y.group(1))
-        #                         new_y = calib_coord[0][0][1] - printer_center[1] + y_val
-        #                         new_line = pattern_y.sub(f"Y{new_y:.3f}", new_line)
 
-        #                     modified_lines.append(new_line)
-        #                 else:
-        #                     modified_lines.append(line)
-                    
-        #             with open(outputfile, "w", encoding="utf-8") as f:
-        #                 new_first_line = f'; calibrated data by bed center calibration ({datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")})\n'
-        #                 modified_lines = [new_first_line] + modified_lines
-        #                 f.writelines(modified_lines)
+                if self.print_stats.get_bed_mesh_on_print_start():
+                    if re.search(re_custom_commented, content):
+                        content = re.sub(re_custom_commented, fr"\1{insert_code_name}", content, count=1)
 
-        #             filename = outputfilename
-        
-        # logging.info(f"Loading file: {filename}")
+                    if re.search(re_anchor_active, content):
+                        if not re.search(re_custom_active, content):
+                            def replace_with_append(m):
+                                return make_comment(m.group(1)) + f"\n{insert_code_name}"
+                            content = re.sub(re_anchor_active, replace_with_append, content, count=1)
+                        else:
+                            content = re.sub(re_anchor_active, lambda m: make_comment(m.group(1)), content, count=1)
+                else:
+                    if re.search(re_custom_active, content):
+                        content = re.sub(re_custom_active, fr"\1; {insert_code_name}", content, count=1)
+                
+                    if re.search(re_anchor_commented, content):
+                        content = re.sub(re_anchor_commented, lambda m: remove_comment(m.group(1)), content, count=1)
 
-        # # back to home position before print start
-        # self.gcode.run_script("G1 X-100 Y205 Z10 F3000")
+                f_out.write(content)
 
+                if marker_found:
+                    shutil.copyfileobj(f_in, f_out)
+
+        except Exception as e:
+            logging.exception(f"virtual_sdcard modifier error: {e}")
+
+
+
+        self.file_name = filename
         if filename[0] == '/':
             filename = filename[1:]
         self._load_file(gcmd, filename, check_subdirs=True)
