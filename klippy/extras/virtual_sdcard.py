@@ -342,10 +342,10 @@ class VirtualSD:
             # self.gcode.get_mutex().__exit__()
             
             # move to capture point
-            self.gcode._process_commands("G28\nG91\nG1 E-50\nG90\nG1 X-25 Y100 Z95 F3000\n".split("\n"), need_ack=True)
+            self.gcode._process_commands("G28\nG91\nG1 E-50\nG90\nG1 X-25 Y100 Z95 F30000\n".split("\n"), need_ack=True)
             if self.gcode.get_mutex():
                 logging.info("waiting for gcode mutex to release for bed center calibration2")
-                self.reactor.pause(self.reactor.monotonic() + 15.0)
+                self.reactor.pause(self.reactor.monotonic() + 7.0)
 
             logging.info("Positioned for bed center calibration")
 
@@ -353,16 +353,17 @@ class VirtualSD:
             if calib_coord is None:
                 error_message = "Bed center calibration failed"
                 # raise gcmd.error("Bed center calibration failed")
-            elif "Failed" in calib_coord:
+            elif "F" in calib_coord:
                 error_message = calib_coord
                 # raise gcmd.error(calib_coord)
 
             logging.info(f"Calibrated coord: {calib_coord}")
-            logging.info(f"calib_coord[0]: {calib_coord[0]}, calib_coord[1]: {calib_coord[1]}")
+            # logging.info(f"calib_coord[0]: {calib_coord[0]}, calib_coord[1]: {calib_coord[1]}")
 
             if error_message is not None:
                 self.work_timer = None
                 self.gcode.respond_raw(f"Error: {error_message}")
+                self.gcode.run_script("G1 X-100 Y205 Z10 F3000\nG91\nG1 E50\nG90")
                 return self.reactor.NEVER
             
             pattern_x = re.compile(r"X([-+]?\d*\.?\d+)")
@@ -382,7 +383,11 @@ class VirtualSD:
                 first_line = f.readline()
                 if first_line.startswith('; calibrated data by bed center calibration'):
                     logging.info("Already calibrated file detected. Aborting to prevent double calibration.")
-                    os.remove(outputfile)
+                    if os.path.exists(outputfile):
+                        os.remove(outputfile)
+                    filename = self.file_name
+                    self._load_file(self.gcode, filename, check_subdirs=True)
+                    logging.info(f"Loading already clibrated file: {filename}")
 
                 else:
                     lines = f.readlines()
@@ -414,12 +419,12 @@ class VirtualSD:
 
                     filename = outputfilename
 
-                    self._load_file(self.gcode, filename, check_subdirs=True)
-        
-                    logging.info(f"Loading file: {filename}")
+                self._load_file(self.gcode, filename, check_subdirs=True)
+    
+                logging.info(f"Loading file: {filename}")
 
             # back to home position before print start
-            self.gcode.run_script("G1 X-100 Y205 Z10 E0 F3000")
+            self.gcode.run_script("G1 X-100 Y205 Z10 F3000\nG91\nG1 E50\nG90")
 
         logging.info("Starting SD card print (position %d)", self.file_position)
         self.reactor.unregister_timer(self.work_timer)

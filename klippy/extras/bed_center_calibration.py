@@ -19,6 +19,19 @@ import logging
 # ]
 
 # 3.0 25.11.18 heyan
+# known_printer_points_mm = [
+#     (175, 20), (100, 20), (30, 20),
+#     (175, 100), (100, 100), (30, 100),
+#     (175, 175), (100, 175), (30, 175)
+# ]
+
+# known_camera_points_px = [
+#     (640.5, 257.5), (865.5, 262.5), (1080.5, 262.5),
+#     (637.5, 505.5), (864.5, 510.5), (1080.5, 512.5),
+#     (637.5, 732.5), (864.5, 737.5), (1077.5, 743.5)
+# ]
+
+# 3.0 new cam
 known_printer_points_mm = [
     (175, 20), (100, 20), (30, 20),
     (175, 100), (100, 100), (30, 100),
@@ -26,9 +39,9 @@ known_printer_points_mm = [
 ]
 
 known_camera_points_px = [
-    (640.5, 257.5), (865.5, 262.5), (1080.5, 262.5),
-    (637.5, 505.5), (864.5, 510.5), (1080.5, 512.5),
-    (637.5, 732.5), (864.5, 737.5), (1077.5, 743.5)
+    (472.5, 268.5), (725.5, 265.5), (966.5, 262.5),
+    (476.5, 544.5), (731.5, 540.5), (969.5, 538.5),
+    (479.5, 798.5), (732.5, 800.5), (970.5, 796.5)
 ]
 
 class BedCenterCalibration:
@@ -38,20 +51,19 @@ class BedCenterCalibration:
         self.camera_height = 1080
 
         # roi ratios
-        x_p = 0.25
+        x_p = 0.15
         y_p = 0.15
-        w_p = 0.35
-        h_p = 0.6
+        w_p = 0.45
+        h_p = 0.7
 
-        # camera intrinsic parameters 25.11.18 heyan
-        fx = 3310.416164
-        fy = 3310.416164
+        fx = 1325.818723
+        fy = 1325.818723
         cx = 960.000000
         cy = 540.000000
-        k1 = -3.051924
-        k2 = 17.192101
-        p1 = -0.019756
-        p2 = 0.057260
+        k1 = -0.464634
+        k2 = 0.233666
+        p1 = 0.003345
+        p2 = -0.006846
         k3 = 0.0
 
         self.camera_matrix = np.array([
@@ -75,8 +87,8 @@ class BedCenterCalibration:
         #
         self.param1 = 50
         self.param2 = 25
-        self.min_radius = 250
-        self.max_radius = 300
+        self.min_radius = 200
+        self.max_radius = 250
 
         # for moving average
         self.moving_avg_center = None
@@ -125,7 +137,7 @@ class BedCenterCalibration:
 
             cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)    # 자동 노출 비활성화
 
-            cap.set(cv2.CAP_PROP_EXPOSURE, 1000)        # 예시 값
+            cap.set(cv2.CAP_PROP_EXPOSURE, 20)        # 예시 값
 
         except Exception as e:
             logging.error(f"Failed to open camera: {e}")
