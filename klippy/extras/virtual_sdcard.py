@@ -190,7 +190,7 @@ class VirtualSD:
             return re.sub(r"^\s*;\s*", "", text, flags=re.MULTILINE)
 
         inputfile = os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", filename)
-        outputname = f"modified_{os.path.basename(filename)}"
+        outputname = f"{os.path.basename(filename)}"
         outputfile = os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", outputname)
         try:
             with open(inputfile, "r", encoding="utf-8") as f_in, \
