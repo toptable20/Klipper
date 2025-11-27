@@ -173,7 +173,7 @@ class VirtualSD:
         active_pattern = target_pattern + r"\s*\n\s*PURGE_SEQUENCE"
         commented_pattern = target_pattern + r"\s*\n\s*;\s*PURGE_SEQUENCE"
 
-        insert_code_name = "BED_MESH_PROFILE LOAD=default"
+        insert_code_name = "BED_MESH_CALIBRATE PROFILE=default"
         re_custom_active = fr"(\n\s*){insert_code_name}"
         re_custom_commented = fr"(\n\s*);\s*{insert_code_name}"
 
@@ -190,7 +190,7 @@ class VirtualSD:
             return re.sub(r"^\s*;\s*", "", text, flags=re.MULTILINE)
 
         inputfile = os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", filename)
-        outputname = f"{os.path.basename(filename)}"
+        outputname = f"tmp_{os.path.basename(filename)}"
         outputfile = os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", outputname)
         try:
             with open(inputfile, "r", encoding="utf-8") as f_in, \
@@ -231,25 +231,36 @@ class VirtualSD:
                 if self.print_stats.get_bed_mesh_on_print_start():
                     if re.search(re_custom_commented, content):
                         content = re.sub(re_custom_commented, fr"\1{insert_code_name}", content, count=1)
+                        logging.info("Restored bed mesh code from comment")
 
                     if re.search(re_anchor_active, content):
                         if not re.search(re_custom_active, content):
                             def replace_with_append(m):
                                 return make_comment(m.group(1)) + f"\n{insert_code_name}"
                             content = re.sub(re_anchor_active, replace_with_append, content, count=1)
+                            logging.info("Commented out anchor and appended bed mesh code")
                         else:
                             content = re.sub(re_anchor_active, lambda m: make_comment(m.group(1)), content, count=1)
+                            logging.info("Commented out anchor code only")
                 else:
                     if re.search(re_custom_active, content):
                         content = re.sub(re_custom_active, fr"\1; {insert_code_name}", content, count=1)
+                        logging.info("Commented out bed mesh code")
                 
                     if re.search(re_anchor_commented, content):
                         content = re.sub(re_anchor_commented, lambda m: remove_comment(m.group(1)), content, count=1)
+                        logging.info("Restored anchor code from comment")
 
                 f_out.write(content)
 
                 if marker_found:
                     shutil.copyfileobj(f_in, f_out)
+
+            shutil.move(outputfile, inputfile)
+            logging.info(f"File modified successfully: {inputfile}")
+            if os.path.exists(outputfile):
+                logging.info(f"remove file: {outputfile}")
+                os.remove(outputfile)
 
         except Exception as e:
             logging.exception(f"virtual_sdcard modifier error: {e}")
