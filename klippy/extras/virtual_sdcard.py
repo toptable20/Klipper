@@ -177,6 +177,9 @@ class VirtualSD:
         re_custom_active = fr"(\n\s*){insert_code_name}"
         re_custom_commented = fr"(\n\s*);\s*{insert_code_name}"
 
+        target_end_pattern = r"(;080816\s*\n\s*G91.*)"
+        clear_cmd = "BED_MESH_CLEAR"
+
         NUM = r"[-]?\d+(?:\.\d+)?"
         raw_block = fr"(?:G1\s+Z{NUM}\s+F{NUM}\s*\n\s*G1\s+X{NUM}\s+Z{NUM}\s+F{NUM}|G1\s+X{NUM}\s+Z{NUM}\s+F{NUM}\s*\n\s*G1\s+Z{NUM}\s+F{NUM})\s*\n\s*G92\s+Z0"
         
@@ -254,7 +257,17 @@ class VirtualSD:
                 f_out.write(content)
 
                 if marker_found:
-                    shutil.copyfileobj(f_in, f_out)
+                    rest_content = f_in.read()
+
+                    already_cleared = target_end_pattern + fr"\s*\n\s*{clear_cmd}"
+
+                    if re.search(already_cleared, rest_content):
+                        logging.info("BED_MESH_CLEAR already exists in end script.")
+                    elif re.search(target_end_pattern, rest_content):
+                        rest_content = re.sub(target_end_pattern, fr"\1\n{clear_cmd}", rest_content, count=1)
+                        logging.info(f"Inserted {clear_cmd} after pattern ';080816 / G91'")
+                    
+                    f_out.write(rest_content)
 
             shutil.move(outputfile, inputfile)
             logging.info(f"File modified successfully: {inputfile}")
