@@ -375,7 +375,7 @@ class VirtualSD:
             self.gcode._process_commands("G28\nG91\nG1 E-50\nG90\nG1 X-25 Y100 Z95 F30000\n".split("\n"), need_ack=True)
             if self.gcode.get_mutex():
                 logging.info("waiting for gcode mutex to release for bed center calibration2")
-                self.reactor.pause(self.reactor.monotonic() + 7.0)
+                self.reactor.pause(self.reactor.monotonic() + 8.0)
 
             logging.info("Positioned for bed center calibration")
 
