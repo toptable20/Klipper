@@ -22,6 +22,7 @@ class VirtualSD:
         self.printer = config.get_printer()
         self.printer.register_event_handler("klippy:shutdown",
                                             self.handle_shutdown)
+        self.config = config
         # sdcard state
         sd = config.get('path')
         self.sdcard_dirname = os.path.normpath(os.path.expanduser(sd))
@@ -295,12 +296,15 @@ class VirtualSD:
         self.do_resume()
     cmd_PURGE_SENSING_help = "Execute a purge sensing"
     def cmd_PURGE_SENSING(self, gcmd):
-        self.finish_purge_sequence = False
-        self.purge_sensing.initState()
-        self.purge_sensing_wait_time, self.purge_sensing_retries = self.purge_sensing.getParams()
-        self._purge_gcmd = gcmd
-        self._purge_retry_count = 0
-        self._purge_check_timer = self.reactor.register_timer(self._purge_check_handler, self.reactor.NOW)
+        if self.config.has_section("purge_sensing"):
+            self.finish_purge_sequence = False
+            self.purge_sensing.initState()
+            self.purge_sensing_wait_time, self.purge_sensing_retries = self.purge_sensing.getParams()
+            self._purge_gcmd = gcmd
+            self._purge_retry_count = 0
+            self._purge_check_timer = self.reactor.register_timer(self._purge_check_handler, self.reactor.NOW)
+        else:
+            logging.info("Purge sensing not configured.")
 
     def _purge_check_handler(self, eventtime):
         if self.purge_sensing.isDetect:

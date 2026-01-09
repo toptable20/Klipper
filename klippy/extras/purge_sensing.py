@@ -1,3 +1,9 @@
+# Add text below to printer.cfg to enable purge sensing
+#
+# [purge_sensing]
+# endstop: PA4
+# retries: 3
+
 
 import logging
 
