@@ -23,6 +23,8 @@ class GCodeCommand:
         # Method wrappers
         self.respond_info = gcode.respond_info
         self.respond_raw = gcode.respond_raw
+    def respond_error(self, msg):
+        self.respond_raw("!! " + msg)
     def get_command(self):
         return self._command
     def get_commandline(self):

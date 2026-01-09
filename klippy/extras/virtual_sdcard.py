@@ -50,12 +50,20 @@ class VirtualSD:
         self.gcode.register_command(
             "SDCARD_PRINT_FILE", self.cmd_SDCARD_PRINT_FILE,
             desc=self.cmd_SDCARD_PRINT_FILE_help)
+        self.gcode.register_command(
+            "PURGE_SENSING", self.cmd_PURGE_SENSING,
+            desc=self.cmd_PURGE_SENSING_help
+        )
         
         self.calc_print_time = self.printer.load_object(config, 'print_time_calc')
 
         self.bed_center_calibration = self.printer.load_object(config, 'bed_center_calibration')
         self.file_name = None
         self.gcode_move = self.printer.load_object(config, 'gcode_move')
+
+        self.purge_sensing = self.printer.load_object(config, 'purge_sensing')
+        self.purge_retries = 0
+        self.finish_purge_sequence = True
 
     def handle_shutdown(self):
         if self.work_timer is not None:
@@ -285,6 +293,41 @@ class VirtualSD:
             filename = filename[1:]
         self._load_file(gcmd, filename, check_subdirs=True)
         self.do_resume()
+    cmd_PURGE_SENSING_help = "Execute a purge sensing"
+    def cmd_PURGE_SENSING(self, gcmd):
+        self.finish_purge_sequence = False
+        self.purge_sensing.initState()
+        self.purge_sensing_wait_time, self.purge_sensing_retries = self.purge_sensing.getParams()
+        self._purge_gcmd = gcmd
+        self._purge_retry_count = 0
+        self._purge_check_timer = self.reactor.register_timer(self._purge_check_handler, self.reactor.NOW)
+
+    def _purge_check_handler(self, eventtime):
+        if self.purge_sensing.isDetect:
+            # self._purge_gcmd.respond_info("Purge sensing detected. Proceeding.")
+            self.reactor.unregister_timer(self._purge_check_timer)
+            self.purge_retries = 0
+            self.finish_purge_sequence = True
+            # logging.info("Purge sensing detected. unregistering timer.")
+            return self.reactor.NEVER
+        self._purge_retry_count += 1
+        if self._purge_retry_count > self.purge_sensing_wait_time*10:  # check for 3 seconds (0.1s * 50)
+            self.purge_retries += 1
+            if self.purge_retries >= self.purge_sensing_retries:
+                self.reactor.unregister_timer(self._purge_check_timer)
+                self.purge_retries = 0
+                self.finish_purge_sequence = True
+                self.must_pause_work = True
+                self.do_cancel()
+                self._purge_gcmd.respond_error("Purge sensing not detected after maximum retries.")
+                return self.reactor.NEVER
+            # self._purge_gcmd.respond_info("Purge sensing not detected! Please check and retry.")
+            # logging.info("Purge sensing not detected after retries. unregistering timer.")
+            self._purge_retry_count = 0
+            self.reactor.unregister_timer(self._purge_check_timer)
+            self.gcode.run_script("PURGE_SEQUENCE")
+        return eventtime + 0.1
+
     def cmd_M20(self, gcmd):
         # List SD card
         files = self.get_file_list()
@@ -470,6 +513,10 @@ class VirtualSD:
         lines = []
         
         while not self.must_pause_work:
+            if not self.finish_purge_sequence:
+                self.reactor.pause(self.reactor.monotonic() + 0.100)
+                continue
+
             if not lines:
                 # Read more data
                 try:
