@@ -408,13 +408,85 @@ class VirtualSD:
         self.next_file_position = pos
     def is_cmd_from_sd(self):
         return self.cmd_from_sd
+    
+    def split_gcode_optimized(self, lines):
+        header, layers, footer = [], [], []
+        current_layer_lines = []
+        current_z = None
+        has_extruded = False
+        state = "HEADER"
+
+        # 패턴 정의
+        z_pattern = re.compile(r"G[01].*Z([-+]?\d*\.?\d+)")
+        e_pattern = re.compile(r"E([-+]?\d*\.?\d+)")
+
+        for line in lines:
+            # 1. 헤더 구간: 슬라이서 설정 시작(G21) 전까지
+            if state == "HEADER":
+                if "G21" in line:
+                    state = "BODY"
+                    current_layer_lines.append(line)
+                else:
+                    header.append(line)
+                continue
+
+            # 2. 본문 구간: 실제 출력 레이어들
+            if state == "BODY":
+                # 푸터 시작 징후 감지 (Slic3r 종료 코드 패턴)
+                if line.startswith(("; Filament-specific end gcode", "M104", "G91", ";080816")):
+                    state = "FOOTER"
+                    footer.append(line)
+                    continue
+
+                z_match = z_pattern.search(line)
+                e_match = e_pattern.search(line)
+                if e_match: has_extruded = True
+
+                if z_match:
+                    new_z = float(z_match.group(1))
+                    # 압출이 발생한 후 Z값이 변해야 레이어 변경으로 간주 (Z=5.0 -> Z=0.7 합치기용)
+                    if has_extruded and current_z is not None and abs(new_z - current_z) > 0.1:
+                        layers.append((current_z, current_layer_lines))
+                        current_layer_lines, has_extruded = [line], False
+                        current_z = new_z
+                    else:
+                        current_layer_lines.append(line)
+                        if current_z is None: current_z = new_z
+                else:
+                    current_layer_lines.append(line)
+            
+            # 3. 푸터 구간: 모든 출력이 끝난 뒤 1번만 실행될 코드
+            elif state == "FOOTER":
+                footer.append(line)
+
+        if current_layer_lines:
+            layers.append((current_z, current_layer_lines))
+        
+        return header, layers, footer
+
+    def transform_line(self, line, offset_x, offset_y):
+        # X, Y 좌표를 찾아 오프셋을 더함
+        def replace_coord(match):
+            prefix = match.group(1) # X or Y
+            val = float(match.group(2))
+            new_val = val + (offset_x if prefix == 'X' else offset_y)
+            return f"{prefix}{new_val:.3f}"
+
+        # G0~G3 명령에 대해서만 좌표 변환 수행
+        if line.startswith(("G0", "G1", "G2", "G3")):
+            line = re.sub(r"([XY])([-+]?\d*\.?\d+)", replace_coord, line)
+        return line
+
     # Background work timer
     def work_handler(self, eventtime):
         error_message = None
 
-        if self.print_stats.get_bed_center_calibration():
+        is_calib_name = any(x in self.file_name for x in ["_multi_calib", "_calib"])
+        if is_calib_name:
+            logging.info(f"Already calibrated file detected. Aborting to prevent double calibration. {self.file_name}")
+        
+        elif self.print_stats.get_bed_center_calibration():
             logging.info("Bed center calibration required before print start")
-
             # mutex lock to prevent gcode command conflict
             # self.gcode.get_mutex().__exit__()
             
@@ -422,83 +494,149 @@ class VirtualSD:
             self.gcode._process_commands("G28\nG91\nG1 E-50\nG90\nG1 X-25 Y100 Z95 F30000\n".split("\n"), need_ack=True)
             if self.gcode.get_mutex():
                 logging.info("waiting for gcode mutex to release for bed center calibration2")
-                self.reactor.pause(self.reactor.monotonic() + 8.0)
+                self.reactor.pause(self.reactor.monotonic() + 15.0)
 
             logging.info("Positioned for bed center calibration")
 
-            calib_coord = self.bed_center_calibration.calc_calib_coord()
-            if calib_coord is None:
-                error_message = "Bed center calibration failed"
-                # raise gcmd.error("Bed center calibration failed")
-            elif "F" in calib_coord:
-                error_message = calib_coord
-                # raise gcmd.error(calib_coord)
 
-            logging.info(f"Calibrated coord: {calib_coord}")
-            # logging.info(f"calib_coord[0]: {calib_coord[0]}, calib_coord[1]: {calib_coord[1]}")
+            # 여러 calib_coord를 지원하는 새로운 함수 호출
+            # 예시: calib_coords = [(x1, y1), (x2, y2), ...]
+            coords = self.bed_center_calibration.calc_calib_coord()
+            calib_coords = [coords] if coords is not None else []
 
-            if error_message is not None:
+            while len(calib_coords) == 1 and isinstance(calib_coords[0], list) and len(calib_coords[0]) > 0 and isinstance(calib_coords[0][0], list):
+                logging.info("Nesting detected, stripping one layer of brackets")
+                calib_coords = calib_coords[0]
+
+            logging.info(f"Final Flattened Calibrated coords: {calib_coords}")
+
+            if not calib_coords or any(c is None or (isinstance(c, str) and "F" in c) for c in calib_coords):
+                error_message = "Bed center calibration failed" if not calib_coords else str(calib_coords)
                 self.work_timer = None
                 self.gcode.respond_raw(f"Error: {error_message}")
-                self.gcode.run_script("G1 X-100 Y205 Z10 F3000\nG91\nG1 E50\nG90")
                 return self.reactor.NEVER
-            
-            pattern_x = re.compile(r"X([-+]?\d*\.?\d+)")
-            pattern_y = re.compile(r"Y([-+]?\d*\.?\d+)")
+
+            logging.info(f"Calibrated coords: {calib_coords}")
+            # logging.info(f"First element: {calib_coords[0]}")
+
+            def split_gcode_by_layer(lines):
+                # Z 이동이 여러 번 나와도, X/Y 이동이 나올 때만 layer를 분리
+                layers = []
+                current_layer = []
+                current_z = None
+                pending_z = None
+                z_pattern = re.compile(r"[Gg]0?[1][^;\n]*Z([-+]?\d*\.?\d+)")
+                xy_pattern = re.compile(r"[Gg]0?[1][^;\n]*(X|Y)")
+                for line in lines:
+                    m_z = z_pattern.search(line)
+                    m_xy = xy_pattern.search(line)
+                    if m_z and not m_xy:
+                        # Z 이동만 있는 경우, 분리 보류
+                        pending_z = float(m_z.group(1))
+                        current_layer.append(line)
+                    elif m_xy:
+                        # X/Y 이동이 있는 경우, layer 분리
+                        if pending_z is not None and (current_z is None or abs(pending_z - current_z) > 1e-5):
+                            if current_layer:
+                                layers.append((current_z, current_layer))
+                            current_layer = [line]
+                            current_z = pending_z
+                            pending_z = None
+                        else:
+                            current_layer.append(line)
+                    else:
+                        current_layer.append(line)
+                if current_layer:
+                    layers.append((current_z, current_layer))
+                return layers
+
+            def calibrate_layer_block(layer_lines, calib_coord, printer_center):
+                pattern_x = re.compile(r"X([-+]?\d*\.?\d+)")
+                pattern_y = re.compile(r"Y([-+]?\d*\.?\d+)")
+                result = []
+                cx, cy = calib_coord 
+                cx = float(cx)
+                cy = float(cy)
+                for line in layer_lines:
+                    if line.startswith(("G0", "G1")):
+                        new_line = line
+                        match_x = pattern_x.search(line)
+                        if match_x:
+                            x_val = float(match_x.group(1))
+                            new_x = cx - printer_center[0] + x_val
+                            new_line = pattern_x.sub(f"X{new_x:.3f}", new_line)
+                        match_y = pattern_y.search(line)
+                        if match_y:
+                            y_val = float(match_y.group(1))
+                            new_y = cy - printer_center[1] + y_val
+                            new_line = pattern_y.sub(f"Y{new_y:.3f}", new_line)
+                        result.append(new_line)
+                    else:
+                        result.append(line)
+                return result
 
             inputfile = os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", self.file_name)
             base, ext = os.path.splitext(self.file_name)
             outputfilename = f"{base}_calib{ext}"
-            
-            if not os.path.exists(os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", "calib")):
-                os.makedirs(os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", "calib"))
-            outputfile = os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", "calib", outputfilename)
+            outdir = os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", "calib")
+            if not os.path.exists(outdir):
+                os.makedirs(outdir)
+            outputfile = os.path.join(outdir, outputfilename)
 
-            modified_lines = []
             printer_center = 102.5, 102.5
+
             with open(inputfile, "r", encoding="utf-8") as f:
-                first_line = f.readline()
-                if first_line.startswith('; calibrated data by bed center calibration'):
-                    logging.info("Already calibrated file detected. Aborting to prevent double calibration.")
-                    if os.path.exists(outputfile):
-                        os.remove(outputfile)
-                    filename = self.file_name
-                    self._load_file(self.gcode, filename, check_subdirs=True)
-                    logging.info(f"Loading already clibrated file: {filename}")
+                all_lines = f.readlines()
 
-                else:
-                    lines = f.readlines()
+            header, layers, footer = self.split_gcode_optimized(all_lines)
+
+            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            with open(outputfile, "w", encoding="utf-8") as fout:
+                fout.write(f"; multi-center calibrated data by bed center calibration ({now_str})\n")
+                fout.write("; --- START OF PRINT (HEADER) ---\n")
+                fout.writelines(header)
+
+                for z, layer_lines in layers:
+                    fout.write(f"\n; --- START LAYER Z={z} ---\n")
+                    for i, coord in enumerate(calib_coords):
+                        off_x = float(coord[0]) - printer_center[0]
+                        off_y = float(coord[1]) - printer_center[1]
                         
-                    for line in lines:
-                        if line.startswith(("G0", "G1")):
-                            new_line = line
+                        fout.write(f"; -- Copy {i} (Offset X:{off_x:.2f}, Y:{off_y:.2f}) --\n")
 
-                            match_x = pattern_x.search(line)
-                            if match_x:
-                                x_val = float(match_x.group(1))
-                                new_x = calib_coord[0] - printer_center[0] + x_val
-                                new_line = pattern_x.sub(f"X{new_x:.3f}", new_line)
+                        for line in layer_lines:
+                            fout.write(self.transform_line(line, off_x, off_y))
+                        
+                fout.write("\n; --- END OF PRINT (FOOTER) ---\n")
+                fout.writelines(footer)
 
-                            match_y = pattern_y.search(line)
-                            if match_y:
-                                y_val = float(match_y.group(1))
-                                new_y = calib_coord[1] - printer_center[1] + y_val
-                                new_line = pattern_y.sub(f"Y{new_y:.3f}", new_line)
+            # with open(inputfile, "r", encoding="utf-8") as f:
+            #     first_line = f.readline()
+            #     if first_line.startswith('; calibrated data by bed center calibration'):
+            #         logging.info("Already calibrated file detected. Aborting to prevent double calibration.")
+            #         if os.path.exists(outputfile):
+            #             os.remove(outputfile)
+            #         filename = self.file_name
+            #         self._load_file(self.gcode, filename, check_subdirs=True)
+            #         logging.info(f"Loading already calibrated file: {filename}")
+            #     else:
+            #         lines = [first_line] + f.readlines()
+            #         layers = split_gcode_by_layer(lines)
+            #         with open(outputfile, "w", encoding="utf-8") as fout:
+            #             fout.write(f'; multi-center calibrated data by bed center calibration ({datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")})\n')
+            #             for z, layer_lines in layers:
+            #                 fout.write(f'\n; ---- Layer Z={z} ----\n')
+            #                 for idx, calib_coord in enumerate(calib_coords):
+            #                     logging.info("Applying calibration center %d: %s", idx+1, calib_coord)
+            #                     fout.write(f'; -- Calib center {idx+1}: {calib_coord} --\n')
+            #                     block = calibrate_layer_block(layer_lines, calib_coord, printer_center)
+            #                     fout.writelines(block)
+            #                     fout.write('\n')
 
-                            modified_lines.append(new_line)
-                        else:
-                            modified_lines.append(line)
-                    
-                    with open(outputfile, "w", encoding="utf-8") as f:
-                        new_first_line = f'; calibrated data by bed center calibration ({datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")})\n'
-                        modified_lines = [new_first_line] + modified_lines
-                        f.writelines(modified_lines)
-
-                    filename = outputfilename
-
-                self._load_file(self.gcode, filename, check_subdirs=True)
-    
-                logging.info(f"Loading file: {filename}")
+            filename = os.path.join("calib", outputfilename)
+            self._load_file(self.gcode, filename, check_subdirs=True)
+            logging.info(f"Loading file: {filename}")
 
             # back to home position before print start
             self.gcode.run_script("G1 X-100 Y205 Z10 F3000\nG91\nG1 E50\nG90")
