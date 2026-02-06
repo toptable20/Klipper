@@ -97,6 +97,8 @@ class ExtruderHoming:
                                         self.cmd_HOME_ACTIVE_EXTRUDER,
                                         when_not_ready=False,
                                         desc=self.cmd_HOME_ACTIVE_EXTRUDER_help)
+            
+        self.print_stats = self.printer.load_object(config, 'print_stats')
 
         # Placeholders
         self.active_extruder: PrinterExtruder = None
@@ -219,6 +221,7 @@ class ExtruderHoming:
 
         # NOTE: flag homing start
         self.homing = True
+        self.print_stats.reset_filament_remaining()
 
         # NOTE: "manual_home" is defined in the PrinterHoming class (at homing.py).
         #       The method instantiates a "HomingMove" class by passing it the

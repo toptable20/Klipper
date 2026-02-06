@@ -5,21 +5,22 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 import logging
+import numpy as np
 
 class PrintStats:
     def __init__(self, config):
-        printer = config.get_printer()
-        self.gcode_move = printer.load_object(config, 'gcode_move')
-        self.reactor = printer.get_reactor()
+        self.printer = config.get_printer()
+        self.gcode_move = self.printer.load_object(config, 'gcode_move')
+        self.reactor = self.printer.get_reactor()
         self.reset()
         # Register commands
-        self.gcode = printer.lookup_object('gcode')
+        self.gcode = self.printer.lookup_object('gcode')
         self.gcode.register_command(
             "SET_PRINT_STATS_INFO", self.cmd_SET_PRINT_STATS_INFO,
             desc=self.cmd_SET_PRINT_STATS_INFO_help)
-        printer.register_event_handler("extruder:activate_extruder",
+        self.printer.register_event_handler("extruder:activate_extruder",
                                        self._handle_activate_extruder)
-        self.calc_print_time = printer.load_object(config, 'print_time_calc')
+        self.calc_print_time = self.printer.load_object(config, 'print_time_calc')
         self.total_time = 0.0
 
         self.need_bed_center_calibration = 0
@@ -33,7 +34,12 @@ class PrintStats:
             desc=self.cmd_SET_PURGE_ON_PRINT_START_help)
         self.gcode.register_command(
             "SET_BED_MESH_ON_PRINT_START", self.cmd_SET_BED_MESH_ON_PRINT_START,
-            desc=self.cmd_SET_BED_MESH_ON_PRINT_START_help)
+            desc=self.cmd_SET_BED_MESH_ON_PRINT_START_help)      
+        
+        self.need_tool_head = True
+        self.cap = [50, 37.5, 25, 12.5, 0]
+        self.cap_cuts = [830, 1155, 1485, 1805, 2200]
+        
 
     def _handle_activate_extruder(self):
         gc_status = self.gcode_move.get_status()
@@ -134,17 +140,25 @@ class PrintStats:
         return self.need_purge_on_print_start
     def get_bed_mesh_on_print_start(self):
         return self.need_bed_mesh_on_print_start
+    
+    def reset_filament_remaining(self):
+        self.filament_remaining = 0.
 
     def reset(self):
         self.filename = self.error_message = ""
         self.state = "standby"
         self.prev_pause_duration = self.last_epos = 0.
         self.filament_used = self.total_duration = 0.
+        self.filament_remaining = 0.
         self.print_start_time = self.last_pause_time = None
         self.init_duration = 0.
         self.info_total_layer = None
         self.info_current_layer = None
     def get_status(self, eventtime):
+        if self.need_tool_head:
+            self.toolhead = self.printer.lookup_object('toolhead')
+            self.need_tool_head = False
+        
         time_paused = self.prev_pause_duration
         if self.print_start_time is not None:
             if self.last_pause_time is not None:
@@ -157,6 +171,8 @@ class PrintStats:
             if self.filament_used < 0.0000001:
                 # Track duration prior to extrusion
                 self.init_duration = self.total_duration - time_paused
+        if self.toolhead.get_position()[-1] >= self.cap_cuts[0]:   # E 830 = 50ml
+            self.filament_remaining = "{:.2f}".format(np.interp(self.toolhead.get_position()[-1], self.cap_cuts, self.cap))
         print_duration = self.total_duration - self.init_duration - time_paused
         return {
             'filename': self.filename,
@@ -164,6 +180,7 @@ class PrintStats:
             'print_duration': print_duration,
             'total_time': self.total_time,            
             'filament_used': self.filament_used,
+            'filament_remaining': self.filament_remaining,
             'state': self.state,
             'message': self.error_message,
             'bed_center_calibration_active': self.need_bed_center_calibration,
