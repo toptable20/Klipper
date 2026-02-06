@@ -143,6 +143,7 @@ class PrintStats:
     
     def reset_filament_remaining(self):
         self.filament_remaining = 0.
+        self.last_remaining = 0
 
     def reset(self):
         self.filename = self.error_message = ""
@@ -150,6 +151,7 @@ class PrintStats:
         self.prev_pause_duration = self.last_epos = 0.
         self.filament_used = self.total_duration = 0.
         self.filament_remaining = 0.
+        self.last_remaining = 0
         self.print_start_time = self.last_pause_time = None
         self.init_duration = 0.
         self.info_total_layer = None
@@ -171,8 +173,10 @@ class PrintStats:
             if self.filament_used < 0.0000001:
                 # Track duration prior to extrusion
                 self.init_duration = self.total_duration - time_paused
-        if self.toolhead.get_position()[-1] >= self.cap_cuts[0]:   # E 830 = 50ml
+        cur_extruder_pos = self.toolhead.get_position()[-1]
+        if cur_extruder_pos > self.last_remaining and cur_extruder_pos >= self.cap_cuts[0]:   # E 830 = 50ml
             self.filament_remaining = "{:.2f}".format(np.interp(self.toolhead.get_position()[-1], self.cap_cuts, self.cap))
+            self.last_remaining = cur_extruder_pos
         print_duration = self.total_duration - self.init_duration - time_paused
         return {
             'filename': self.filename,
