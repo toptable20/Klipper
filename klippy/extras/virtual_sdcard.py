@@ -267,10 +267,7 @@ class VirtualSD:
 
                 rest_content = f_in.read()
                 if marker_found and self.print_stats.get_bed_mesh_on_print_start():
-                    
-
                     already_cleared = target_end_pattern + fr"\s*\n\s*{clear_cmd}"
-
                     if re.search(already_cleared, rest_content):
                         logging.info("BED_MESH_CLEAR already exists in end script.")
                     elif re.search(target_end_pattern, rest_content):
