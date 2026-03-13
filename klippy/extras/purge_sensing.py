@@ -45,6 +45,7 @@ class PurgeSensing:
         self.wait_time = 5 # seconds
         self.retries = 0
         self.purge_retries = 0
+        self.baseline_value = 0.0
 
         self.prevSignal = 0
         self.isDetect = False
@@ -103,13 +104,14 @@ class PurgeSensing:
         axis = gcmd.get('AXIS', 'e').lower()
         distance = float(gcmd.get('DIST', 2200))    # max 2250, before extrude move to 555 -> 2250 - 555 = 1695
         speed = float(gcmd.get('SPEED', 15))
-        self.current_threshold = float(gcmd.get('THRESHOLD', self.threshold))
 
         self.purgeLoadingDone = False
 
         self.toolhead = self.printer.lookup_object('toolhead')
         self.toolhead.wait_moves()
         
+        self.baseline_value = self.last_value
+        logging.info(f"self.baseline_value: {self.baseline_value}")
         start_pos = list(self.toolhead.get_position())
         axis_idx = 'xyze'.index(axis)
         target_pos = start_pos[:]
@@ -160,11 +162,13 @@ class PurgeSensing:
         if self.last_value > self.max_value:
             self.max_value = self.last_value
 
-        if value > self.threshold and self.start_detecting:
-            self.isDetect = True 
+        if self.start_detecting:
+            if value >= (self.baseline_value + self.threshold):
+                self.isDetect = True 
+                logging.info(f"value: {round(self.last_value, 2)}")
 
         if self.is_homing and self.homing_completion:
-            if value > self.current_threshold:
+            if value >= (self.baseline_value + self.threshold):
                 self.is_homing = False
                 self.homing_completion.complete(True)
 
@@ -172,6 +176,8 @@ class PurgeSensing:
         self.isDetect = False
         self.purgeLoadingDone = False
         self.start_detecting = True
+        self.baseline_value = self.last_value
+        logging.info(f"self.baseline_value: {self.baseline_value}")
         logging.info("Purge sensing state initialized.")
 
     def getParams(self):
@@ -196,7 +202,8 @@ class PurgeSensing:
 
             self.toolhead = self.printer.lookup_object('toolhead')
             self.toolhead.wait_moves()
-            self.initState()
+            if self.purge_retries == 0:
+                self.initState()
             self._purge_gcmd = gcmd
             self._purge_retry_count = 0
             logging.info("start purge sensing")
