@@ -45,6 +45,7 @@ class PurgeSensing:
         self.wait_time = 5 # seconds
         self.retries = 0
         self.purge_retries = 0
+        self.baseline_value = 0.0
 
         self.prevSignal = 0
         self.isDetect = False
@@ -88,28 +89,27 @@ class PurgeSensing:
 
             self.finish_purge_sequence = True
 
+        # PURGE_SEQUENCE 내부에 사용
         self.gcode.register_command(
             "PURGE_SENSING", self.cmd_PURGE_SENSING,
             desc=self.cmd_PURGE_SENSING_help)
+        # 푸드잉크 교체에 사용
         self.gcode.register_command(
             "PURGE_LOADING", self.cmd_PURGE_LOADING,
             desc=self.cmd_PURGE_LOADING_help)
-        self.gcode.register_command(
-            "PURGE_HOMING", self.cmd_PURGE_HOMING,
-            desc=self.cmd_PURGE_HOMING_help)
         
     cmd_PURGE_LOADING_help = "Analog sensor for purge"
     def cmd_PURGE_LOADING(self, gcmd):
         axis = gcmd.get('AXIS', 'e').lower()
         distance = float(gcmd.get('DIST', 2200))    # max 2250, before extrude move to 555 -> 2250 - 555 = 1695
         speed = float(gcmd.get('SPEED', 15))
-        self.current_threshold = float(gcmd.get('THRESHOLD', self.threshold))
 
         self.purgeLoadingDone = False
 
         self.toolhead = self.printer.lookup_object('toolhead')
         self.toolhead.wait_moves()
         
+        self.baseline_value = self.last_value
         start_pos = list(self.toolhead.get_position())
         axis_idx = 'xyze'.index(axis)
         target_pos = start_pos[:]
@@ -148,43 +148,10 @@ class PurgeSensing:
             logging.info(f"MCU Position after homing: {real_stop_pos_e}")
             self.purgeLoadingDone = True
             
-            # 확인용 로그
             axis_idx = 'xyze'.index(axis)
             self.gcode.respond_info(f"Actual stop position: {stop_pos[axis_idx]:.3f}")
             self.gcode.respond_info(f"Actual stop position: {stop_pos}")
             
-            
-    cmd_PURGE_HOMING_help = "Execute a purge homing"
-    def cmd_PURGE_HOMING(self, gcmd):
-        self.toolhead = self.printer.lookup_object('toolhead')
-
-        endstops = [(self.purgePin, 'purge_sensing_endstop')]
-
-        phoming: PrinterHoming = self.printer.lookup_object('homing')      # PrinterHoming
-
-        self.th_orig_pos = self.toolhead.get_position()
-        logging.info(f"cmd_HOME_EXTRUDER: th_orig_pos={str(self.th_orig_pos)}")
-        speed = 200
-        movepos = 2250
-        pos = self.th_orig_pos[:-1] + [movepos]
-        position_min, position_max = (0, 2250)
-        e_startpos = position_max + pos[-1] * 0.1
-        startpos = self.th_orig_pos[:-1] + [e_startpos]
-        self.toolhead.set_position(newpos=startpos, homing_axes="e")
-
-        # NOTE: flag homing start
-        self.homing = True
-
-        phoming.manual_home(toolhead=self.toolhead, endstops=endstops,
-                            pos=pos, speed=speed,
-                            # NOTE: argument passed to "mcu_endstop.home_start",
-                            #       and used directly in the low-level command.
-                            triggered=True,
-                            # NOTE: if True, an "error" is recorded when the move
-                            #       completes without the endstop triggering.
-                            check_triggered=True)
-
-
     def adc_callback(self, read_time, read_value):
         value = read_value * self.scale
         for helper in self._limit_helpers:
@@ -193,21 +160,20 @@ class PurgeSensing:
         if self.last_value > self.max_value:
             self.max_value = self.last_value
 
-        if value > self.threshold and self.start_detecting:
-            self.isDetect = True 
+        if self.start_detecting:
+            if value >= (self.baseline_value + self.threshold):
+                self.isDetect = True 
 
         if self.is_homing and self.homing_completion:
-            # 여기서 직접 로그를 찍어서 값이 들어오는지 확인하세요
-            # logging.info(f"Homing ADC Value: {value}") 
-            
-            if value > self.current_threshold:
-                self.is_homing = False # 중복 실행 방지
+            if value >= (self.baseline_value + self.threshold):
+                self.is_homing = False
                 self.homing_completion.complete(True)
 
     def initState(self):
         self.isDetect = False
         self.purgeLoadingDone = False
         self.start_detecting = True
+        self.baseline_value = self.last_value
         logging.info("Purge sensing state initialized.")
 
     def getParams(self):
@@ -229,9 +195,14 @@ class PurgeSensing:
             if self.virtual_sd is not None:
                 self.virtual_sd.finish_purge_sequence = False
                 logging.info("Set virtual_sd.finish_purge_sequence to False")
-            self.initState()
+
+            self.toolhead = self.printer.lookup_object('toolhead')
+            self.toolhead.wait_moves()
+            if self.purge_retries == 0:
+                self.initState()
             self._purge_gcmd = gcmd
             self._purge_retry_count = 0
+            logging.info("start purge sensing")
             self._purge_check_timer = self.reactor.register_timer(self._purge_check_handler, self.reactor.NOW)
         else:
             logging.info("Purge sensing not configured.")
@@ -241,27 +212,25 @@ class PurgeSensing:
             # self._purge_gcmd.respond_info("Purge sensing detected. Proceeding.")
             self.reactor.unregister_timer(self._purge_check_timer)
             self.purge_retries = 0
+            self.start_detecting = False
             if self.virtual_sd is not None:
                 self.virtual_sd.finish_purge_sequence = True
-            # logging.info("Purge sensing detected. unregistering timer.")
-            self.start_detecting = False
             return self.reactor.NEVER
+
         self._purge_retry_count += 1
-        if self._purge_retry_count > self.wait_time*10:  # check for 3 seconds (0.1s * 50)
+        if self._purge_retry_count > self.wait_time * 10:
             self.purge_retries += 1
             if self.purge_retries >= self.retries:
                 self.reactor.unregister_timer(self._purge_check_timer)
                 self.purge_retries = 0
                 self.finish_purge_sequence = True
+                self.start_detecting = False
                 if self.virtual_sd is not None:
                     self.virtual_sd.must_pause_work = True
                     self.virtual_sd.do_cancel()
                     self.virtual_sd.finish_purge_sequence = True
-                self._purge_gcmd.respond_error("Purge sensing not detected after maximum retries.")
-                self.start_detecting = False
+                self._purge_gcmd.respond_error("Maximum retries reached. Purge sensing failed.")
                 return self.reactor.NEVER
-            # self._purge_gcmd.respond_info("Purge sensing not detected! Please check and retry.")
-            # logging.info("Purge sensing not detected after retries. unregistering timer.")
             self._purge_retry_count = 0
             self.reactor.unregister_timer(self._purge_check_timer)
             self.gcode.run_script("PURGE_SEQUENCE")
