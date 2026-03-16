@@ -60,8 +60,9 @@ known_camera_points_px = [
 class BedCenterCalibration:
     def __init__(self, config):
         
-        self.camera_width = 1920
-        self.camera_height = 1080
+        # 720p
+        self.camera_width = 1280
+        self.camera_height = 720
 
         # roi ratios
         x_p = 0.15
@@ -69,14 +70,14 @@ class BedCenterCalibration:
         w_p = 0.45
         h_p = 0.7
 
-        fx = 1075.170883
-        fy = 1075.170883
-        cx = 960.000000
-        cy = 540.000000
-        k1 = -0.277504
-        k2 = 0.069615
-        p1 = 0.002308
-        p2 = -0.004525
+        fx = 2564.578478
+        fy = 2564.578478
+        cx = 640.000000
+        cy = 360.000000
+        k1 = 1.087670
+        k2 = -8.875281
+        p1 = 0.017541
+        p2 = -0.012206
         k3 = 0.0
         
         self.camera_matrix = np.array([
@@ -91,17 +92,24 @@ class BedCenterCalibration:
         np_camera_points = np.array(known_camera_points_px, dtype=np.float32)
         np_printer_points = np.array(known_printer_points_mm, dtype=np.float32)
 
-        self.h_matrix, _ = cv2.findHomography(np_camera_points, np_printer_points)
+        # self.h_matrix, _ = cv2.findHomography(np_camera_points, np_printer_points)
+
+        # h_list from visiontest
+        h_list = [[-6.51832046e-01, -7.97751455e-03,  4.78689264e+02],
+                [-8.07052932e-03,  6.52541837e-01, -1.03152371e+02],
+                [-8.50759553e-06,  7.41128646e-06,  1.00000000e+00]]
+        self.h_matrix = np.array(h_list, dtype=np.float64)
 
         available_cameras = []
         max_devices = 5
         self.resize_percent = 40  # for camera display window
 
-        #
-        self.param1 = 50
-        self.param2 = 25
-        self.min_radius = 200
-        self.max_radius = 250
+        # OV9732
+        # target: 18cm circle
+        self.param1 = 30
+        self.param2 = 10
+        self.min_radius = 100
+        self.max_radius = 200
 
         # for moving average
         self.moving_avg_center = None
@@ -150,7 +158,8 @@ class BedCenterCalibration:
 
             cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)    # 자동 노출 비활성화
 
-            cap.set(cv2.CAP_PROP_EXPOSURE, 20)        # 예시 값
+            # OV9732
+            cap.set(cv2.CAP_PROP_EXPOSURE, 1500)        # 예시 값
 
         except Exception as e:
             logging.error(f"Failed to open camera: {e}")
