@@ -63,6 +63,7 @@ class VirtualSD:
         self.gcode_move = self.printer.load_object(config, 'gcode_move')
 
         self.purge_sensing = self.printer.load_object(config, 'purge_sensing')
+        self.temp_humi_sensing = self.printer.load_object(config, 'temp_humi_sensing')
         # self.purge_retries = 0
         self.finish_purge_sequence = True
 
