@@ -29,8 +29,16 @@ class IdleTimeout:
         self.gcode.register_command('SET_IDLE_TIMEOUT',
                                     self.cmd_SET_IDLE_TIMEOUT,
                                     desc=self.cmd_SET_IDLE_TIMEOUT_help)
+        self.gcode.register_command('SET_PURGE_PERIOD',
+                                    self.cmd_SET_PURGE_PERIOD,
+                                    desc=self.cmd_SET_PURGE_PERIOD_help)
+        self.purge_period = 30
+        self.purge_timer = None
+        self.last_purge_time = 0.
         self.state = "Idle"
         self.last_print_start_systime = 0.
+    def stats(self, eventtime):
+        return False, "self.state=%s" % (self.state,)
     def get_status(self, eventtime):
         printing_time = 0.
         if self.state == "Printing":
@@ -39,6 +47,7 @@ class IdleTimeout:
     def handle_ready(self):
         self.toolhead = self.printer.lookup_object('toolhead')
         self.timeout_timer = self.reactor.register_timer(self.timeout_handler)
+        self.purge_timer = self.reactor.register_timer(self.purge_handler)
         self.printer.register_event_handler("toolhead:sync_print_time",
                                             self.handle_sync_print_time)
     def transition_idle_state(self, eventtime):
@@ -90,9 +99,25 @@ class IdleTimeout:
             return eventtime + READY_TIMEOUT
         # Transition to "ready" state
         self.state = "Ready"
+        self.last_purge_time = eventtime
         self.printer.send_event("idle_timeout:ready",
                                 est_print_time + PIN_MIN_TIME)
         return eventtime + self.idle_timeout
+    def purge_handler(self, eventtime):
+        if self.state == "Ready":
+            if self.purge_period <= 0:
+                return eventtime + 1.
+            purge_period_seconds = self.purge_period * 60
+            time_since_purge = eventtime - self.last_purge_time
+            if time_since_purge >= purge_period_seconds:
+                try:
+                    self.gcode.run_script("PURGE_SEQUENCE")
+                    self.last_purge_time = eventtime
+                except:
+                    logging.exception("purge sequence execution failed")
+                return eventtime + purge_period_seconds
+            return eventtime + purge_period_seconds - time_since_purge
+        return eventtime + 1.
     def handle_sync_print_time(self, curtime, print_time, est_print_time):
         if self.state == "Printing":
             return
@@ -111,6 +136,19 @@ class IdleTimeout:
         if self.state == "Ready":
             checktime = self.reactor.monotonic() + timeout
             self.reactor.update_timer(self.timeout_timer, checktime)
+    cmd_SET_PURGE_PERIOD_help = "Set the purge period in miniute"
+    def cmd_SET_PURGE_PERIOD(self, gcmd):
+        purge_period = gcmd.get_int('VALUE', self.purge_period, minval = 0)
+        self.purge_period = purge_period
+        cur_time = self.reactor.monotonic()
+        self.last_purge_time = cur_time
+        gcmd.respond_info("purge_period: Idle purge period set to %d min" % (purge_period,))
+        if self.state == "Ready":
+            if purge_period > 0:
+                purge_period_seconds = purge_period * 60
+                self.reactor.update_timer(self.purge_timer, cur_time + purge_period_seconds)
+            else:
+                self.reactor.update_timer(self.purge_timer, cur_time + 1.)
 
 def load_config(config):
     return IdleTimeout(config)
