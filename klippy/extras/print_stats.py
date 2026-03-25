@@ -151,6 +151,8 @@ class PrintStats:
         self.prev_pause_duration = self.last_epos = 0.
         self.filament_used = self.total_duration = 0.
         self.filament_remaining = 0.
+        self.current_temperature = 0.
+        self.current_humidity = 0.
         self.last_remaining = 0
         self.print_start_time = self.last_pause_time = None
         self.init_duration = 0.
@@ -159,6 +161,7 @@ class PrintStats:
     def get_status(self, eventtime):
         if self.need_tool_head:
             self.toolhead = self.printer.lookup_object('toolhead')
+            self.temp_humi_sensing = self.printer.lookup_object('temp_humi_sensing')
             self.need_tool_head = False
         
         time_paused = self.prev_pause_duration
@@ -185,6 +188,8 @@ class PrintStats:
             'total_time': self.total_time,            
             'filament_used': self.filament_used,
             'filament_remaining': self.filament_remaining,
+            'temp': self.temp_humi_sensing.get_status()['temp'],
+            'humi': self.temp_humi_sensing.get_status()['humi'],
             'state': self.state,
             'message': self.error_message,
             'bed_center_calibration_active': self.need_bed_center_calibration,

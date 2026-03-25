@@ -7,6 +7,7 @@
 SAMPLE_COUNT = 3  # Take 8 subsamples within the MCU
 SAMPLE_TIME = 0.2  # with a 0.001s gap between each
 REPORT_TIME = 1.0  # and report their average every 1s
+MOVING_AVG_SIZE = 10  # Window size for moving average filter
 
 class LimitHelper:
     def __init__(self, config, idx):
@@ -29,6 +30,7 @@ class LimitHelper:
 
 
 import logging
+from collections import deque
 
 class TempHumiSensing:
     def __init__(self, config):        
@@ -38,8 +40,11 @@ class TempHumiSensing:
         self.virtual_sd = self.printer.lookup_object('virtual_sdcard', None)
         self.reactor = self.printer.get_reactor()
 
-        self.temp = 0.0
-        self.humi = 0.0
+        self.temp = 0
+        self.humi = 0
+        
+        self.temp_buffer = deque(maxlen=MOVING_AVG_SIZE)
+        self.humi_buffer = deque(maxlen=MOVING_AVG_SIZE)
 
         if config.has_section("temp_humi_setting"):
             purgeConfig = config.getsection('temp_humi_setting')
@@ -69,15 +74,19 @@ class TempHumiSensing:
             self.finish_purge_sequence = True
         
     def adc_temp_callback(self, read_time, read_value):
-        self.temp = -66.875 + 218.75*(read_value*3.3/5.0)
+        raw_temp = -66.875 + 218.75*(read_value*3.3/5.0)
+        self.temp_buffer.append(raw_temp)
+        self.temp = sum(self.temp_buffer) / len(self.temp_buffer)
 
     def adc_humi_callback(self, read_time, read_value):
-        self.humi = -12.5+125*(read_value*3.3/5.0)
+        raw_humi = -12.5+125*(read_value*3.3/5.0)
+        self.humi_buffer.append(raw_humi)
+        self.humi = sum(self.humi_buffer) / len(self.humi_buffer)
             
     def get_status(self, eventtime=None):
         return {
-            'temp': round(self.temp, 0),
-            'humi': round(self.humi, 0)
+            'temp': round(self.temp, 1),
+            'humi': round(self.humi)
         }
     
 def load_config(config):
