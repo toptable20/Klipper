@@ -1,4 +1,4 @@
-# Add text below to printer.cfg to enable purge sensing
+# Add text below to printer.cfg to enable temperature and humidity sensing
 #
 # [temp_humi_setting]
 # temp_pin: 
@@ -47,10 +47,10 @@ class TempHumiSensing:
         self.humi_buffer = deque(maxlen=MOVING_AVG_SIZE)
 
         if config.has_section("temp_humi_setting"):
-            purgeConfig = config.getsection('temp_humi_setting')
+            tempHumi = config.getsection('temp_humi_setting')
             
-            self.tempPin = purgeConfig.get('temp_pin')
-            self.humiPin = purgeConfig.get('humi_pin')
+            self.tempPin = tempHumi.get('temp_pin')
+            self.humiPin = tempHumi.get('humi_pin')
 
             self._limit_helpers = []
             for i in range(1, 1000):
@@ -70,8 +70,6 @@ class TempHumiSensing:
             self.mcu_adc_humi.setup_adc_sample(SAMPLE_TIME, SAMPLE_COUNT)
             query_adc = self.printer.load_object(config, "query_adc")
             query_adc.register_adc("humiSensor", self.mcu_adc_humi)
-
-            self.finish_purge_sequence = True
         
     def adc_temp_callback(self, read_time, read_value):
         raw_temp = -66.875 + 218.75*(read_value*3.3/5.0)
