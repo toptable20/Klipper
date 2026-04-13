@@ -35,10 +35,15 @@ class PrintStats:
         self.gcode.register_command(
             "SET_BED_MESH_ON_PRINT_START", self.cmd_SET_BED_MESH_ON_PRINT_START,
             desc=self.cmd_SET_BED_MESH_ON_PRINT_START_help)      
+        self.gcode.register_command(
+            'SET_MESH_POINT', self.cmd_SET_MESH_POINT,
+            desc=self.cmd_SET_MESH_POINT_help)
         
         self.need_tool_head = True
         self.cap = [50, 37.5, 25, 12.5, 0]
         self.cap_cuts = [830, 1155, 1485, 1805, 2200]
+
+        self.custom_points = -1
         
 
     def _handle_activate_extruder(self):
@@ -124,6 +129,7 @@ class PrintStats:
                                             "print start"
     cmd_SET_BED_MESH_ON_PRINT_START_help = "Enable or disable bed mesh " \
                                             "requirement for print start"
+    cmd_SET_MESH_POINT_help = "Set Bed Mesh Point"
     def cmd_SET_BED_CENTER_CALIBRATION(self, gcmd):
         self.need_bed_center_calibration = gcmd.get_int("ENABLE", self.need_bed_center_calibration, minval = 0)
         logging.info("Set bed center calibration to %d", self.need_bed_center_calibration)
@@ -133,6 +139,11 @@ class PrintStats:
     def cmd_SET_BED_MESH_ON_PRINT_START(self, gcmd):
         self.need_bed_mesh_on_print_start = gcmd.get_int("ENABLE", self.need_bed_mesh_on_print_start, minval = 0)
         logging.info("Set bed mesh on print start to %d", self.need_bed_mesh_on_print_start)
+    def cmd_SET_MESH_POINT(self, gcmd):
+        custom_points = gcmd.get_int('VALUE', self.custom_points, minval = 0)
+        self.custom_points = custom_points
+        logging.info(f"Get bed mesh custom point: {self.custom_points}")
+        
 
     def get_bed_center_calibration(self):
         return self.need_bed_center_calibration
@@ -140,6 +151,8 @@ class PrintStats:
         return self.need_purge_on_print_start
     def get_bed_mesh_on_print_start(self):
         return self.need_bed_mesh_on_print_start
+    def get_bed_mesh_custom_points(self):
+        return self.custom_points
     
     def reset_filament_remaining(self):
         self.filament_remaining = 0.

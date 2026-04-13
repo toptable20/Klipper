@@ -347,10 +347,6 @@ class BedMeshCalibrate:
         self.gcode.register_command(
             'BED_MESH_CALIBRATE', self.cmd_BED_MESH_CALIBRATE,
             desc=self.cmd_BED_MESH_CALIBRATE_help)
-        self.gcode.register_command(
-            'SET_MESH_POINT', self.cmd_SET_MESH_POINT,
-            desc=self.cmd_SET_MESH_POINT_help)
-        
         self.custom_points = -1
         
         self.bed_center_calibration = self.printer.load_object(config, 'bed_center_calibration')
@@ -589,6 +585,7 @@ class BedMeshCalibrate:
             )
             self.origin = bed_center
 
+        self.custom_points = self.print_stats.get_bed_mesh_custom_points()
         if self.custom_points != -1:
             self.mesh_config['x_count'] = self.custom_points
             self.mesh_config['y_count'] = self.custom_points
@@ -675,12 +672,6 @@ class BedMeshCalibrate:
         except BedMeshError as e:
             raise gcmd.error(str(e))
         self.probe_mgr.start_probe(gcmd)
-    cmd_SET_MESH_POINT_help = "Set Bed Mesh Point"
-    def cmd_SET_MESH_POINT(self, gcmd):
-        custom_points = gcmd.get_int('VALUE', self.custom_points, minval = 0)
-        self.custom_points = custom_points
-        logging.info(f"Get bed mesh custom point: {self.custom_points}")
-        
     def probe_finalize(self, offsets, positions):
         z_offset = offsets[2]
         positions = [[round(p[0], 2), round(p[1], 2), p[2]]
