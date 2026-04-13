@@ -32,6 +32,8 @@ class BedCenterCalibration:
         self.param2 = 10
         self.min_radius = 100
         self.max_radius = 200
+        self.target_r_mm = 180
+        self.margin = 10
 
         # for moving average
         self.moving_avg_center = None
@@ -42,6 +44,7 @@ class BedCenterCalibration:
         self.sig_x = 0
 
         self.input_height = 0
+        self.available_cameras = []
 
         for i in range(max_devices):
             device_path = f"/dev/video{i}"
@@ -53,6 +56,13 @@ class BedCenterCalibration:
         
         self.available_cameras = available_cameras
         logging.info(f"Available cameras for bed center calibration: {self.available_cameras}")
+
+    def get_is_available_camera(self):
+        logging.info(f"self.available_cameras: {self.available_cameras}")
+        if self.available_cameras:
+            return True
+        else:
+            return False
 
     def load_calibration_data(self, file_path):
         with open(file_path, 'r') as f:
@@ -89,6 +99,28 @@ class BedCenterCalibration:
     
     def set_height(self, height):
         self.input_height = height
+
+    def mm_to_pixel_radius(self, radius_mm, h_matrix_new):
+        h_pixel_to_world = h_matrix_new
+        h_world_to_pixel = np.linalg.inv(h_matrix_new)
+        
+        cx_px = self.camera_width / 2
+        cy_px = self.camera_height / 2
+        
+        center_px = np.array([[[cx_px, cy_px]]], dtype=np.float32)
+        center_world = cv2.perspectiveTransform(center_px, h_pixel_to_world)
+        wx, wy = center_world[0][0]
+        
+        target_world = np.array([[[wx + float(radius_mm), wy]]], dtype=np.float32)
+        
+        target_px = cv2.perspectiveTransform(target_world, h_world_to_pixel)
+        tx_px, ty_px = target_px[0][0]
+        
+        pixel_radius = np.sqrt((tx_px - cx_px)**2 + (ty_px - cy_px)**2)
+        
+        # print(f"Dist calculation: Center({cx_px}, {cy_px}) -> Target({tx_px}, {ty_px})")
+        
+        return int(round(pixel_radius))
     
     def calc_calib_coord(self, camshow = False):
         logging.info("Starting bed center calibration...")
@@ -131,6 +163,9 @@ class BedCenterCalibration:
             printbed_roi = self.get_camera_roi()
             img_roi = img_undistorted[printbed_roi[1]:printbed_roi[1]+printbed_roi[3], printbed_roi[0]:printbed_roi[0]+printbed_roi[2]]
 
+            self.min_radius = self.mm_to_pixel_radius(self.target_r_mm - self.margin, h_matrix_new)
+            self.max_radius = self.mm_to_pixel_radius(self.target_r_mm + self.margin, h_matrix_new)
+
             logging.info("Copying frame")
             frame2 = img_undistorted.copy()
             img_roi = cv2.GaussianBlur(img_roi, (self.k_size, self.k_size), self.sig_x)
@@ -164,7 +199,7 @@ class BedCenterCalibration:
             success_count += 1
 
             pixel_coord = np.array([[cx, cy]], dtype=np.float32)
-            self.calib_coord = cv2.perspectiveTransform(np.array([pixel_coord]), self.get_h_matrix_new())
+            self.calib_coord = cv2.perspectiveTransform(np.array([pixel_coord]), self.h_matrix_new)
 
             self.moving_avg_center = (self.alpha * self.calib_coord[0][0]) + (1 - self.alpha) * (self.moving_avg_center if self.moving_avg_center is not None else self.calib_coord[0][0])
 
