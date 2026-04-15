@@ -56,9 +56,9 @@ class BedCenterCalibration:
         
         self.available_cameras = available_cameras
         logging.info(f"Available cameras for bed center calibration: {self.available_cameras}")
+        logging.info(f"cam size: {self.camera_width}x{self.camera_height}")
 
     def get_is_available_camera(self):
-        logging.info(f"self.available_cameras: {self.available_cameras}")
         if self.available_cameras:
             return True
         else:
@@ -143,8 +143,8 @@ class BedCenterCalibration:
         self.camera_matrix, self.dist_coeffs, self.h_matrix, self.delta_h = self.load_calibration_data(CALIB_FILE_PATH)
 
         self.h_matrix_new = self.h_matrix + (self.input_height * self.delta_h)
-        if h_matrix_new[2, 2] != 0:
-            h_matrix_new = h_matrix_new / h_matrix_new[2, 2]
+        if self.h_matrix_new[2, 2] != 0:
+            self.h_matrix_new = self.h_matrix_new / self.h_matrix_new[2, 2]
 
         logging.info("Start capturing images")
         fail_count = 0
@@ -163,8 +163,8 @@ class BedCenterCalibration:
             printbed_roi = self.get_camera_roi()
             img_roi = img_undistorted[printbed_roi[1]:printbed_roi[1]+printbed_roi[3], printbed_roi[0]:printbed_roi[0]+printbed_roi[2]]
 
-            self.min_radius = self.mm_to_pixel_radius(self.target_r_mm - self.margin, h_matrix_new)
-            self.max_radius = self.mm_to_pixel_radius(self.target_r_mm + self.margin, h_matrix_new)
+            self.min_radius = self.mm_to_pixel_radius(self.target_r_mm - self.margin, self.h_matrix_new)
+            self.max_radius = self.mm_to_pixel_radius(self.target_r_mm + self.margin, self.h_matrix_new)
 
             logging.info("Copying frame")
             frame2 = img_undistorted.copy()
