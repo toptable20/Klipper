@@ -40,12 +40,15 @@ class PrintStats:
             desc=self.cmd_SET_MESH_POINT_help)
         
         self.bed_center_calibration = self.printer.load_object(config, 'bed_center_calibration')
+        self.temp_humi_sensing = self.printer.load_object(config, 'temp_humi_sensing')
         
         self.need_tool_head = True
         self.cap = [50, 37.5, 25, 12.5, 0]
         self.cap_cuts = [830, 1155, 1485, 1805, 2200]
 
         self.custom_points = -1
+
+        self.available_bed_mesh = config.has_section("bed_mesh")
         
 
     def _handle_activate_extruder(self):
@@ -176,7 +179,6 @@ class PrintStats:
     def get_status(self, eventtime):
         if self.need_tool_head:
             self.toolhead = self.printer.lookup_object('toolhead')
-            self.temp_humi_sensing = self.printer.lookup_object('temp_humi_sensing')
             self.need_tool_head = False
         
         time_paused = self.prev_pause_duration
@@ -210,7 +212,8 @@ class PrintStats:
             'bed_center_calibration_active': self.need_bed_center_calibration,
             'info': {'total_layer': self.info_total_layer,
                      'current_layer': self.info_current_layer},
-            'available_camera': self.bed_center_calibration.get_is_available_camera()
+            'available_camera': self.bed_center_calibration.get_is_available_camera(),
+            'available_bed_mesh': self.available_bed_mesh,
         }
     def get_calc_print_time(self):
         self.total_time = self.calc_print_time.calc_time(build_layers = True)
