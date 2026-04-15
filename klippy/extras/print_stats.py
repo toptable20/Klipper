@@ -39,6 +39,8 @@ class PrintStats:
             'SET_MESH_POINT', self.cmd_SET_MESH_POINT,
             desc=self.cmd_SET_MESH_POINT_help)
         
+        self.bed_center_calibration = self.printer.load_object(config, 'bed_center_calibration')
+        
         self.need_tool_head = True
         self.cap = [50, 37.5, 25, 12.5, 0]
         self.cap_cuts = [830, 1155, 1485, 1805, 2200]
@@ -207,7 +209,8 @@ class PrintStats:
             'message': self.error_message,
             'bed_center_calibration_active': self.need_bed_center_calibration,
             'info': {'total_layer': self.info_total_layer,
-                     'current_layer': self.info_current_layer}
+                     'current_layer': self.info_current_layer},
+            'available_camera': self.bed_center_calibration.get_is_available_camera()
         }
     def get_calc_print_time(self):
         self.total_time = self.calc_print_time.calc_time(build_layers = True)
