@@ -32,8 +32,8 @@ class BedCenterCalibration:
         self.param2 = 10
         self.min_radius = 100
         self.max_radius = 200
-        self.target_r_mm = 180
-        self.margin = 10
+        self.target_r_mm = 80
+        self.margin = 20
 
         # for moving average
         self.moving_avg_center = None
