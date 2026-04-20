@@ -145,7 +145,7 @@ class PrintStats:
         self.need_bed_mesh_on_print_start = gcmd.get_int("ENABLE", self.need_bed_mesh_on_print_start, minval = 0)
         logging.info("Set bed mesh on print start to %d", self.need_bed_mesh_on_print_start)
     def cmd_SET_MESH_POINT(self, gcmd):
-        custom_points = gcmd.get_int('VALUE', self.custom_points, minval = 0)
+        custom_points = gcmd.get_int('VALUE', self.custom_points, minval = 3)
         self.custom_points = custom_points
         logging.info(f"Get bed mesh custom point: {self.custom_points}")
         

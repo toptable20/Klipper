@@ -300,6 +300,10 @@ class VirtualSD:
         self.target_height = target_height
         gcmd.respond_info("target_height: Set target height set to %d mm" % (self.target_height,))
         self.bed_center_calibration.set_height(self.target_height)
+        if self.print_stats.available_bed_mesh:
+            bed_mesh = self.printer.lookup_object('bed_mesh')
+            bed_mesh.set_target_height(target_height)
+            logging.info(f"set horizontal z to {target_height}+20mm")
     def cmd_M20(self, gcmd):
         # List SD card
         files = self.get_file_list()
