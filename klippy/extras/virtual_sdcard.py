@@ -55,11 +55,16 @@ class VirtualSD:
             "SET_TARGET_HEIGHT", self.cmd_SET_TARGET_HEIGHT,
             desc=self.cmd_SET_TARGET_HEIGHT_help
         )
+        self.gcode.register_command(
+            "SET_TARGET_RADIUS", self.cmd_SET_TARGET_RADIUS,
+            desc=self.cmd_SET_TARGET_RADIUS_help
+        )
         
         self.calc_print_time = self.printer.load_object(config, 'print_time_calc')
 
         self.bed_center_calibration = self.printer.load_object(config, 'bed_center_calibration')
-        self.target_height = 0.0
+        self.target_height = 0
+        self.target_radius = 0
         self.file_name = None
         self.gcode_move = self.printer.load_object(config, 'gcode_move')
 
@@ -296,7 +301,7 @@ class VirtualSD:
         self.do_resume()
     cmd_SET_TARGET_HEIGHT_help = "Set target height for bed center calibration"
     def cmd_SET_TARGET_HEIGHT(self, gcmd):
-        target_height = gcmd.get_float('VALUE', self.target_height, minval = 0.0)
+        target_height = gcmd.get_int('VALUE', self.target_height, minval = 0)
         self.target_height = target_height
         gcmd.respond_info("target_height: Set target height set to %d mm" % (self.target_height,))
         self.bed_center_calibration.set_height(self.target_height)
@@ -304,6 +309,12 @@ class VirtualSD:
             bed_mesh = self.printer.lookup_object('bed_mesh')
             bed_mesh.set_target_height(target_height)
             logging.info(f"set horizontal z to {target_height}+20mm")
+    cmd_SET_TARGET_RADIUS_help = "Set target radius for bed center calibration"
+    def cmd_SET_TARGET_RADIUS(self, gcmd):
+        target_radius = gcmd.get_int('VALUE', self.target_radius, minval = 0)
+        self.target_radius = target_radius
+        gcmd.respond_info("target_radius: Set target radius set to %d mm" % (self.target_radius,))
+        self.bed_center_calibration.set_radius(self.target_radius)
     def cmd_M20(self, gcmd):
         # List SD card
         files = self.get_file_list()

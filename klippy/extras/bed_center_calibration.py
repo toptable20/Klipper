@@ -32,8 +32,8 @@ class BedCenterCalibration:
         self.param2 = 10
         self.min_radius = 100
         self.max_radius = 200
-        self.target_r_mm = 80
-        self.margin = 20
+        self.target_r_mm = 50
+        self.margin = 10
 
         # for moving average
         self.moving_avg_center = None
@@ -44,6 +44,7 @@ class BedCenterCalibration:
         self.sig_x = 0
 
         self.input_height = 0
+        self.input_radius = 0
         self.available_cameras = []
 
         for i in range(max_devices):
@@ -99,6 +100,11 @@ class BedCenterCalibration:
     
     def set_height(self, height):
         self.input_height = height
+    
+    def set_radius(self, radius):
+        if radius - self.margin < 0:
+            radius = self.margin
+        self.target_r_mm = radius
 
     def mm_to_pixel_radius(self, radius_mm, h_matrix_new):
         h_pixel_to_world = h_matrix_new
@@ -163,8 +169,8 @@ class BedCenterCalibration:
             printbed_roi = self.get_camera_roi()
             img_roi = img_undistorted[printbed_roi[1]:printbed_roi[1]+printbed_roi[3], printbed_roi[0]:printbed_roi[0]+printbed_roi[2]]
 
-            self.min_radius = self.mm_to_pixel_radius(self.target_r_mm - self.margin, self.h_matrix_new)
-            self.max_radius = self.mm_to_pixel_radius(self.target_r_mm + self.margin, self.h_matrix_new)
+            self.min_radius = np.clip(self.mm_to_pixel_radius(self.target_r_mm - self.margin, self.h_matrix_new), 0, 100)
+            self.max_radius = np.clip(self.mm_to_pixel_radius(self.target_r_mm + self.margin, self.h_matrix_new), 0, 100)
 
             logging.info("Copying frame")
             frame2 = img_undistorted.copy()
