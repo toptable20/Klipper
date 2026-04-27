@@ -52,18 +52,25 @@ class VirtualSD:
             "SDCARD_PRINT_FILE", self.cmd_SDCARD_PRINT_FILE,
             desc=self.cmd_SDCARD_PRINT_FILE_help)
         self.gcode.register_command(
-            "PURGE_SENSING", self.cmd_PURGE_SENSING,
-            desc=self.cmd_PURGE_SENSING_help
+            "SET_TARGET_HEIGHT", self.cmd_SET_TARGET_HEIGHT,
+            desc=self.cmd_SET_TARGET_HEIGHT_help
+        )
+        self.gcode.register_command(
+            "SET_TARGET_RADIUS", self.cmd_SET_TARGET_RADIUS,
+            desc=self.cmd_SET_TARGET_RADIUS_help
         )
         
         self.calc_print_time = self.printer.load_object(config, 'print_time_calc')
 
         self.bed_center_calibration = self.printer.load_object(config, 'bed_center_calibration')
+        self.target_height = 0
+        self.target_radius = 0
         self.file_name = None
         self.gcode_move = self.printer.load_object(config, 'gcode_move')
 
         self.purge_sensing = self.printer.load_object(config, 'purge_sensing')
-        self.purge_retries = 0
+        self.temp_humi_sensing = self.printer.load_object(config, 'temp_humi_sensing')
+        # self.purge_retries = 0
         self.finish_purge_sequence = True
 
     def handle_shutdown(self):
@@ -265,18 +272,16 @@ class VirtualSD:
 
                 f_out.write(content)
 
-                if marker_found:
-                    rest_content = f_in.read()
-
+                rest_content = f_in.read()
+                if marker_found and self.print_stats.get_bed_mesh_on_print_start():
                     already_cleared = target_end_pattern + fr"\s*\n\s*{clear_cmd}"
-
                     if re.search(already_cleared, rest_content):
                         logging.info("BED_MESH_CLEAR already exists in end script.")
                     elif re.search(target_end_pattern, rest_content):
                         rest_content = re.sub(target_end_pattern, fr"\1\n{clear_cmd}", rest_content, count=1)
                         logging.info(f"Inserted {clear_cmd} after pattern ';080816 / G91'")
                     
-                    f_out.write(rest_content)
+                f_out.write(rest_content)
 
             shutil.move(outputfile, inputfile)
             logging.info(f"File modified successfully: {inputfile}")
@@ -294,44 +299,22 @@ class VirtualSD:
             filename = filename[1:]
         self._load_file(gcmd, filename, check_subdirs=True)
         self.do_resume()
-    cmd_PURGE_SENSING_help = "Execute a purge sensing"
-    def cmd_PURGE_SENSING(self, gcmd):
-        if self.config.has_section("purge_sensing"):
-            self.finish_purge_sequence = False
-            self.purge_sensing.initState()
-            self.purge_sensing_wait_time, self.purge_sensing_retries = self.purge_sensing.getParams()
-            self._purge_gcmd = gcmd
-            self._purge_retry_count = 0
-            self._purge_check_timer = self.reactor.register_timer(self._purge_check_handler, self.reactor.NOW)
-        else:
-            logging.info("Purge sensing not configured.")
-
-    def _purge_check_handler(self, eventtime):
-        if self.purge_sensing.isDetect:
-            # self._purge_gcmd.respond_info("Purge sensing detected. Proceeding.")
-            self.reactor.unregister_timer(self._purge_check_timer)
-            self.purge_retries = 0
-            self.finish_purge_sequence = True
-            # logging.info("Purge sensing detected. unregistering timer.")
-            return self.reactor.NEVER
-        self._purge_retry_count += 1
-        if self._purge_retry_count > self.purge_sensing_wait_time*10:  # check for 3 seconds (0.1s * 50)
-            self.purge_retries += 1
-            if self.purge_retries >= self.purge_sensing_retries:
-                self.reactor.unregister_timer(self._purge_check_timer)
-                self.purge_retries = 0
-                self.finish_purge_sequence = True
-                self.must_pause_work = True
-                self.do_cancel()
-                self._purge_gcmd.respond_error("Purge sensing not detected after maximum retries.")
-                return self.reactor.NEVER
-            # self._purge_gcmd.respond_info("Purge sensing not detected! Please check and retry.")
-            # logging.info("Purge sensing not detected after retries. unregistering timer.")
-            self._purge_retry_count = 0
-            self.reactor.unregister_timer(self._purge_check_timer)
-            self.gcode.run_script("PURGE_SEQUENCE")
-        return eventtime + 0.1
-
+    cmd_SET_TARGET_HEIGHT_help = "Set target height for bed center calibration"
+    def cmd_SET_TARGET_HEIGHT(self, gcmd):
+        target_height = gcmd.get_int('VALUE', self.target_height, minval = 0)
+        self.target_height = target_height
+        gcmd.respond_info("target_height: Set target height set to %d mm" % (self.target_height,))
+        self.bed_center_calibration.set_height(self.target_height)
+        if self.print_stats.available_bed_mesh:
+            bed_mesh = self.printer.lookup_object('bed_mesh')
+            bed_mesh.set_target_height(target_height)
+            logging.info(f"set horizontal z to {target_height}+20mm")
+    cmd_SET_TARGET_RADIUS_help = "Set target radius for bed center calibration"
+    def cmd_SET_TARGET_RADIUS(self, gcmd):
+        target_radius = gcmd.get_int('VALUE', self.target_radius, minval = 0)
+        self.target_radius = target_radius
+        gcmd.respond_info("target_radius: Set target radius set to %d mm" % (self.target_radius,))
+        self.bed_center_calibration.set_radius(self.target_radius)
     def cmd_M20(self, gcmd):
         # List SD card
         files = self.get_file_list()

@@ -1,129 +1,50 @@
 import os
 import cv2
 import numpy as np
+import json
 
 import logging
 
-# Known calibration points for bed center calibration
-# 1.0
-# known_printer_points_mm = [
-#     (130, 140), (95, 140), (130.50, 177),
-#     (112, 160), (149, 160), (167, 141),
-#     (151, 125), (130.5, 105), (115, 122)
-# ]
-
-# known_camera_points_px = [
-#     (323.5, 180.5), (228.5, 183.5), (322.5, 80.5),
-#     (273.5, 129.5), (373.5, 125.5), (422.5, 175.5),
-#     (382.5, 223.5), (330.5, 279.5), (287.5, 233.5)
-# ]
-
-# 3.0 25.11.18 heyan
-known_printer_points_mm = [
-    (175, 20), (100, 20), (30, 20),
-    (175, 100), (100, 100), (30, 100),
-    (175, 175), (100, 175), (30, 175)
-]
-
-known_camera_points_px = [
-    (640.5, 257.5), (865.5, 262.5), (1080.5, 262.5),
-    (637.5, 505.5), (864.5, 510.5), (1080.5, 512.5),
-    (637.5, 732.5), (864.5, 737.5), (1077.5, 743.5)
-]
-
-# 3.0 new cam
-# known_printer_points_mm = [
-#     (175, 20), (100, 20), (30, 20),
-#     (175, 100), (100, 100), (30, 100),
-#     (175, 175), (100, 175), (30, 175)
-# ]
-
-# known_camera_points_px = [
-#     (472.5, 268.5), (725.5, 265.5), (966.5, 262.5),
-#     (476.5, 544.5), (731.5, 540.5), (969.5, 538.5),
-#     (479.5, 798.5), (732.5, 800.5), (970.5, 796.5)
-# ]
-
-# 3.0 
-# known_printer_points_mm = [
-#     (175, 20), (100, 20), (30, 20),
-#     (175, 100), (100, 100), (30, 100),
-#     (175, 175), (100, 175), (30, 175)
-# ]
-
-# known_camera_points_px = [
-#     (519.5, 305.5), (746.5, 302.5), (961.5, 300.5),
-#     (524.5, 550.5), (750.5, 550.5), (965.5, 545.5),
-#     (530.5, 780.5), (757.5, 779.5), (970.5, 777.5)
-# ]
+CALIB_FILE_PATH = "/home/mks/printer_data/config/calib_config.json"
 
 class BedCenterCalibration:
     def __init__(self, config):
         
-        self.camera_width = 1920
-        self.camera_height = 1080
-
-        # self.camera_width = 1280
-        # self.camera_height = 720
+        # 720p
+        self.camera_width = 1280
+        self.camera_height = 720
 
         # roi ratios
         x_p = 0.15
         y_p = 0.15
         w_p = 0.45
         h_p = 0.7
-        # x_p = 0.25
-        # y_p = 0.05
-        # w_p = 0.45
-        # h_p = 0.60
-
-        fx = 2059.877690
-        fy = 2059.877690
-        cx = 960.000000
-        cy = 540.000000
-        k1 = -1.120172
-        k2 = 1.932153
-        p1 = -0.012699
-        p2 = 0.030329
-        k3 = 0.0
-        
-        self.camera_matrix = np.array([
-            [fx, 0, cx],
-            [0, fy, cy],
-            [0, 0, 1]
-        ], dtype=np.float32)
-        self.dist_coeffs = np.array([k1, k2, p1, p2, k3], dtype=np.float32)
 
         self.camera_roi = (int(self.camera_width*x_p), int(self.camera_height*y_p), int(self.camera_width*w_p), int(self.camera_height*h_p))  # x, y, w, h
-
-        np_camera_points = np.array(known_camera_points_px, dtype=np.float32)
-        np_printer_points = np.array(known_printer_points_mm, dtype=np.float32)
-
-        # self.h_matrix, _ = cv2.findHomography(np_camera_points, np_printer_points)
-        # h_list = [[ 3.73458970e-01, -1.75049397e-02, -1.09760592e+02],
-        #             [-9.36206623e-03, -3.85290494e-01,  2.10532741e+02],
-        #             [-3.94690392e-05, -9.11647266e-05,  1.00000000e+00]]
-        h_list = [[-4.09314335e-01,  4.88190012e-03,  4.60610128e+02],
-                    [ 7.90331266e-03,  4.06450762e-01, -1.05692373e+02],
-                    [ 1.85405618e-05, -1.95641987e-05,  1.00000000e+00]]
-        self.h_matrix = np.array(h_list, dtype=np.float64)
 
         available_cameras = []
         max_devices = 5
         self.resize_percent = 40  # for camera display window
 
-        #
-        self.param1 = 50
-        self.param2 = 25
-        self.min_radius = 200
-        self.max_radius = 250
+        # OV9732
+        # target: 18cm circle
+        self.param1 = 30
+        self.param2 = 10
+        self.min_radius = 100
+        self.max_radius = 200
+        self.target_r_mm = 50
+        self.margin = 10
 
-        # for moving average
         self.moving_avg_center = [None] * 20
         self.alpha = 0.2
 
         # blur filter size
         self.k_size = 5
         self.sig_x = 0
+
+        self.input_height = 0
+        self.input_radius = 0
+        self.available_cameras = []
 
         for i in range(max_devices):
             device_path = f"/dev/video{i}"
@@ -135,6 +56,31 @@ class BedCenterCalibration:
         
         self.available_cameras = available_cameras
         logging.info(f"Available cameras for bed center calibration: {self.available_cameras}")
+        logging.info(f"cam size: {self.camera_width}x{self.camera_height}")
+
+    def get_is_available_camera(self):
+        if self.available_cameras:
+            return True
+        else:
+            return False
+
+    def load_calibration_data(self, file_path):
+        with open(file_path, 'r') as f:
+            data = json.load(f)
+
+        # 리스트를 다시 numpy array로 변환 (float32 권장)
+        mtx = np.array(data['mtx'], dtype=np.float32)
+        dist = np.array(data['dist'], dtype=np.float32)
+        h_matrix = np.array(data['h0'], dtype=np.float32)
+        href = np.array(data['href'], dtype=np.float32)
+        ref_h = float(data['ref_h'])
+
+        if ref_h <= 0:
+            raise ValueError("Reference height(ref_h) must be greater than 0.")
+        
+        delta_h = (href-h_matrix) / ref_h
+
+        return mtx, dist, h_matrix, delta_h
 
     def get_camera_roi(self):
         return self.camera_roi
@@ -148,6 +94,39 @@ class BedCenterCalibration:
     def get_h_matrix(self):
         return self.h_matrix
     
+    def get_h_matrix_new(self):
+        return self.h_matrix_new
+    
+    def set_height(self, height):
+        self.input_height = height
+    
+    def set_radius(self, radius):
+        if radius - self.margin < 0:
+            radius = self.margin
+        self.target_r_mm = radius
+
+    def mm_to_pixel_radius(self, radius_mm, h_matrix_new):
+        h_pixel_to_world = h_matrix_new
+        h_world_to_pixel = np.linalg.inv(h_matrix_new)
+        
+        cx_px = self.camera_width / 2
+        cy_px = self.camera_height / 2
+        
+        center_px = np.array([[[cx_px, cy_px]]], dtype=np.float32)
+        center_world = cv2.perspectiveTransform(center_px, h_pixel_to_world)
+        wx, wy = center_world[0][0]
+        
+        target_world = np.array([[[wx + float(radius_mm), wy]]], dtype=np.float32)
+        
+        target_px = cv2.perspectiveTransform(target_world, h_world_to_pixel)
+        tx_px, ty_px = target_px[0][0]
+        
+        pixel_radius = np.sqrt((tx_px - cx_px)**2 + (ty_px - cy_px)**2)
+        
+        # print(f"Dist calculation: Center({cx_px}, {cy_px}) -> Target({tx_px}, {ty_px})")
+        
+        return int(round(pixel_radius))
+    
     def calc_calib_coord(self, camshow = False):
         logging.info("Starting bed center calibration...")
         try:
@@ -155,15 +134,9 @@ class BedCenterCalibration:
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.get_camera_size()[0])
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.get_camera_size()[1])
             logging.info(f"cam size: {cap.get(cv2.CAP_PROP_FRAME_WIDTH)}x{cap.get(cv2.CAP_PROP_FRAME_HEIGHT)}")
-
-            # cap.set(cv2.CAP_PROP_BRIGHTNESS, 0) 
-            # cap.set(cv2.CAP_PROP_CONTRAST, 45)
-
-            # cap.set(cv2.CAP_PROP_AUTO_WB, 1)
-            # cap.set(cv2.CAP_PROP_WB_TEMPERATURE, 6000) 
-
             cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1)    # 자동 노출 비활성화
 
+            # OV9732
             cap.set(cv2.CAP_PROP_EXPOSURE, 1500)        # 예시 값
 
         except Exception as e:
@@ -172,15 +145,19 @@ class BedCenterCalibration:
         
         self.calib_coord = None
 
+        self.camera_matrix, self.dist_coeffs, self.h_matrix, self.delta_h = self.load_calibration_data(CALIB_FILE_PATH)
+
+        self.h_matrix_new = self.h_matrix + (self.input_height * self.delta_h)
+        if self.h_matrix_new[2, 2] != 0:
+            self.h_matrix_new = self.h_matrix_new / self.h_matrix_new[2, 2]
+
         logging.info("Start capturing images")
         fail_count = 0
         success_count = 0
-        # self.moving_avg_center = None
         detected_groups = []
         try_count = 0
+        self.moving_avg_center = None
         while fail_count < 10 and cap.isOpened():
-            try_count += 1
-            
             ret, frame = cap.read()
             logging.info("Captured image")
             if not ret:
@@ -188,111 +165,11 @@ class BedCenterCalibration:
                 fail_count += 1
                 continue
 
-            printbed_roi = self.get_camera_roi()
-
-            # hough circle detection
-            # img_undistorted = cv2.undistort(frame, self.camera_matrix, self.dist_coeffs, None, self.camera_matrix)
-            # img_roi = img_undistorted[printbed_roi[1]:printbed_roi[1]+printbed_roi[3], printbed_roi[0]:printbed_roi[0]+printbed_roi[2]]
-
-            # logging.info("Copying frame")
-            # frame2 = img_undistorted.copy()
-            # img_roi = cv2.GaussianBlur(img_roi, (self.k_size, self.k_size), self.sig_x)
-            # gray = cv2.cvtColor(img_roi, cv2.COLOR_BGR2GRAY)
-            # circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, 1, 10000, param1 = self.param1, param2 = self.param2, minRadius = self.min_radius, maxRadius = self.max_radius)
-            # cv2.rectangle(frame2, (printbed_roi[0], printbed_roi[1]), (printbed_roi[0]+printbed_roi[2], printbed_roi[1]+printbed_roi[3]), 255, 1)
-        
-            # if circles is None or circles.shape[-1] != 3:
-            #     logging.warning("No circles detected, retrying...")
-
-            #     img_filename = f"/home/mks/printer_data/screenshot/undistorted_image_fail_{fail_count}.png"
-            #     cv2.imwrite(img_filename, frame2)
-            #     logging.info(f"Saved image: {img_filename}")
-
-            #     fail_count += 1
-            #     continue
-
-            # logging.info(f"Circles detected {circles}")
-            # cx = cy = 0
-            # for i in circles[0]:
-            #     cx = i[0] + printbed_roi[0]   # ROI의 x offset 추가
-            #     cy = i[1] + printbed_roi[1]   # ROI의 y offset 추가
-            #     cv2.circle(frame2, (int(cx), int(cy)), int(i[2]), (0,0,255), 2)  #원 그리기
-            #     cv2.circle(frame2, (int(cx), int(cy)), 2, (0,0,255), 3)  #원 그리기
-
-            # logging.info(f"Circle center: ({cx}, {cy})")
-
-
-            # HLS contour detection
-            # img_roi = frame[printbed_roi[1]:printbed_roi[1]+printbed_roi[3], 
-            #         printbed_roi[0]:printbed_roi[0]+printbed_roi[2]]
-            # img_color = cv2.cvtColor(img_roi, cv2.COLOR_BGR2HLS)
-            # hx, lx, sx = cv2.split(img_color)
-            # image_color_band = sx
-            # _, binary_image = cv2.threshold(image_color_band, 80, 200, cv2.THRESH_BINARY)
-            # kernel = np.ones((5,5), np.uint8)
-            # binary_image = cv2.morphologyEx(binary_image, cv2.MORPH_CLOSE, kernel)
-            # contours, _ = cv2.findContours(binary_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-            # target_centers = []
-            # for cnt in contours:
-            #     area = cv2.contourArea(cnt)
-            #     if area < 500:
-            #         continue
-
-            #     M = cv2.moments(cnt)
-            #     if M['m00'] == 0:
-            #         continue
-
-            #     mc_x = M["m10"] / M["m00"]
-            #     mc_y = M["m01"] / M["m00"]
-
-            #     epsilon = 0.005 * cv2.arcLength(cnt, True)
-            #     approx = cv2.approxPolyDP(cnt, epsilon, True)
-            #     # approx = cv2.approxPolyDP(cnt, 10, True)
-            #     bound_rect = cv2.boundingRect(approx)
-
-            #     # print("bound_rect:", bound_rect)
-
-            #     if bound_rect[2] < 5 or bound_rect[3] < 50:  # width, height
-            #         continue
-
-            #     (x, y, w, h) = bound_rect
-
-            #     cv2.rectangle(frame, (printbed_roi[0] + x, printbed_roi[1] + y), (printbed_roi[0] + x + w, printbed_roi[1] + y + h), (0, 0, 255), 2)
-
-            #     color = (0, 0, 255)
-            #     offset = 5
-
-            #     abs_x = mc_x + (printbed_roi[0] if printbed_roi else 0)
-            #     abs_y = mc_y + (printbed_roi[1] if printbed_roi else 0)
-
-            #     cv2.drawContours(frame, [approx + np.array([ [printbed_roi[0], printbed_roi[1]] ])], 0, (0,255,0), 2)
-
-            #     cv2.circle(frame, (int(abs_x), int(abs_y)), 3, color, -1, 8, 0)    # 중심점 그리기
-
-                
-            #     # print("center: ", abs_x, abs_y)
-            #     # print("Bounding Rect:", x, y, w, h)
-            #     cv2.rectangle(
-            #         frame,
-            #         (int(x + (printbed_roi[0] if printbed_roi else 0) - offset),
-            #         int(y + (printbed_roi[1] if printbed_roi else 0)- offset)),
-            #         (int(x + w + (printbed_roi[0] if printbed_roi else 0) + offset),
-            #         int(y + h + (printbed_roi[1] if printbed_roi else 0) + offset)),
-            #         color, 1
-            #     )
-
-            #     target_centers.append((abs_x, abs_y))
-
-
-
             img_undistorted = cv2.undistort(frame, self.camera_matrix, self.dist_coeffs, None, self.camera_matrix)
 
-            # Canny contour detection
-            img_roi = img_undistorted[printbed_roi[1]:printbed_roi[1]+printbed_roi[3], 
-                            printbed_roi[0]:printbed_roi[0]+printbed_roi[2]]
-            
-            # 1. 전처리 (그레이스케일 + 블러)
+            printbed_roi = self.get_camera_roi()
+            img_roi = img_undistorted[printbed_roi[1]:printbed_roi[1]+printbed_roi[3], printbed_roi[0]:printbed_roi[0]+printbed_roi[2]]
+
             gray = cv2.cvtColor(img_roi, cv2.COLOR_BGR2GRAY)
             blurred = cv2.GaussianBlur(gray, (5, 5), 0)
 
@@ -421,17 +298,17 @@ class BedCenterCalibration:
                 logging.info(f"Saved image: {img_filename}")
                 success_count += 1
 
-                # pixel_coord = [None for _ in range(len(target_centers))]
+
                 # self.calib_coord = [None for _ in range(len(final_calib_coords))]
                 
                 target_idx = 0
                 for center in final_calib_coords:
                     cx, cy = center
                     # pixel_coord[target_idx] = np.array([[cx, cy]])
-                    # self.calib_coord[target_idx] = cv2.perspectiveTransform(np.array([pixel_coord[target_idx]]), self.get_h_matrix())
+                    # self.calib_coord[target_idx] = cv2.perspectiveTransform(np.array([pixel_coord[target_idx]]), self.get_h_matrix_new())
                     # self.moving_avg_center[target_idx] = (self.alpha * self.calib_coord[target_idx][0][0]) + (1 - self.alpha) * (self.moving_avg_center[target_idx] if self.moving_avg_center[target_idx] is not None else self.calib_coord[target_idx][0][0])
                     pixel_pt = np.array([[[cx, cy]]], dtype=np.float32)
-                    transformed_pt = cv2.perspectiveTransform(pixel_pt, self.get_h_matrix())
+                    transformed_pt = cv2.perspectiveTransform(pixel_pt, self.get_h_matrix_new())
                     current_coord = transformed_pt[0][0]
 
                     if self.moving_avg_center[target_idx] is None:
@@ -443,15 +320,15 @@ class BedCenterCalibration:
                     logging.info(f"calculated pos: {self.moving_avg_center[target_idx]}")
                     target_idx += 1
                     
-                # if camshow:
-                #     s_width = int(frame2.shape[1] * self.resize_percent / 100)
-                #     s_height = int(frame2.shape[0] * self.resize_percent / 100)
-                #     dim = (s_width, s_height)
-                #     frame2 = cv2.resize(frame2, dim, interpolation = cv2.INTER_AREA)
-                #     cv2.imshow('frame', frame2)
+            # if camshow:
+            #     s_width = int(frame2.shape[1] * self.resize_percent / 100)
+            #     s_height = int(frame2.shape[0] * self.resize_percent / 100)
+            #     dim = (s_width, s_height)
+            #     frame2 = cv2.resize(frame2, dim, interpolation = cv2.INTER_AREA)
+            #     cv2.imshow('frame', frame2)
 
-                if success_count >= 5:
-                    break          
+            if success_count >= 5:
+                break          
         
         cap.release()
 

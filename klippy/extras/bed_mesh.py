@@ -314,6 +314,10 @@ class BedMesh:
         result["axis_maximum"] = th_sts["axis_maximum"]
         web_request.send(result)
 
+    def set_target_height(self, height):
+        self.horizontal_move_z = height + 20    # offset 20mm
+        logging.info(f"set horizontal z to {self.horizontal_move_z}")
+
 
 class ZrefMode:
     DISABLED = 0  # Zero reference disabled
@@ -347,6 +351,8 @@ class BedMeshCalibrate:
         self.gcode.register_command(
             'BED_MESH_CALIBRATE', self.cmd_BED_MESH_CALIBRATE,
             desc=self.cmd_BED_MESH_CALIBRATE_help)
+        self.custom_points = -1
+        self.target_height = 0
         
         self.bed_center_calibration = self.printer.load_object(config, 'bed_center_calibration')
         self.print_stats = self.printer.load_object(config, 'print_stats')
@@ -564,6 +570,7 @@ class BedMeshCalibrate:
             self.mesh_config["y_count"] = new_y_probe_count
         self._profile_name = None
         return True
+
     def update_config(self, gcmd):
         # reset default configuration
         self.radius = self.orig_config['radius']
@@ -583,6 +590,11 @@ class BedMeshCalibrate:
                 % (bed_center[0], bed_center[1])
             )
             self.origin = bed_center
+
+        self.custom_points = self.print_stats.get_bed_mesh_custom_points()
+        if self.custom_points != -1:
+            self.mesh_config['x_count'] = self.custom_points
+            self.mesh_config['y_count'] = self.custom_points
 
         params = gcmd.get_command_parameters()
         need_cfg_update = False
