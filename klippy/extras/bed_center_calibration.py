@@ -15,10 +15,10 @@ class BedCenterCalibration:
         self.camera_height = 720
 
         # roi ratios
-        x_p = 0.15
-        y_p = 0.15
-        w_p = 0.45
-        h_p = 0.7
+        x_p = 0.30
+        y_p = 0.22
+        w_p = 0.28
+        h_p = 0.49
 
         self.camera_roi = (int(self.camera_width*x_p), int(self.camera_height*y_p), int(self.camera_width*w_p), int(self.camera_height*h_p))  # x, y, w, h
 
@@ -156,8 +156,8 @@ class BedCenterCalibration:
         success_count = 0
         detected_groups = []
         try_count = 0
-        self.moving_avg_center = None
         while fail_count < 10 and cap.isOpened():
+            try_count += 1
             ret, frame = cap.read()
             logging.info("Captured image")
             if not ret:
@@ -175,7 +175,7 @@ class BedCenterCalibration:
 
             # 2. Canny Edge 적용
             # 변수: 100(낮은 임계값), 200(높은 임계값) -> 이 수치를 조절하는 것이 핵심입니다.
-            edges = cv2.Canny(blurred, 0, 95)
+            edges = cv2.Canny(blurred, 50, 95)
 
             # 3. 엣지 연결 (모폴로지 연산)
             # 엣지가 끊어져 있으면 컨투어가 제대로 안 따지므로 선을 살짝 두껍게 만듭니다.
@@ -194,7 +194,7 @@ class BedCenterCalibration:
             for cnt in contours:
                 area = cv2.contourArea(cnt)
                 logging.info(f"Contour area: {area}")
-                if area < 10000 or area > 50000:
+                if area < 4500 or area > 50000:
                     continue
 
                 M = cv2.moments(cnt)

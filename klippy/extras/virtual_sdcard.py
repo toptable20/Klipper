@@ -391,61 +391,162 @@ class VirtualSD:
         self.next_file_position = pos
     def is_cmd_from_sd(self):
         return self.cmd_from_sd
-    
-    def split_gcode_optimized(self, lines):
+
+    def split_gcode_by_layer(self, lines):
+        """
+        GCode를 header / layers / footer 로 분리한다.
+
+        레이어 감지 전략
+        ────────────────
+        이 슬라이서(Slic3r)는 레이어 전환 시 Z+E를 동시에 사용하지 않는다.
+        대신 아래 패턴으로 레이어를 구분한다.
+
+            G1 Z{hop}   ← retract-lift (Z 올라감)
+            G1 X Y      ← 이동 (travel, E 없음)
+            G1 Z{print} ← print height로 내려옴 (Z 내려감)
+            G1 E...     ← unretract
+            G1 X Y E... ← 실제 프린트
+
+        따라서 「Z가 내려오는 시점(Z drop)」에 새 레이어를 판단한다.
+        단, 같은 print_z로 내려오면 동일 레이어의 다음 세그먼트이고,
+        다른 print_z로 내려오면 새 레이어이다.
+
+        레이어 블록 구성
+        ────────────────
+        각 레이어 블록은 [Z_hop, XY_travel, Z_down, print_moves...] 형태가 되도록
+        Z_hop + travel 라인을 pending 버퍼에 임시 보관했다가
+        Z_down 시점에 새 레이어인지 판단 후 귀속시킨다.
+
+        이렇게 하면 copy 간 전환 시 Z 시퀀스가 올바르게 유지된다:
+            Copy N  마지막: ...print... G92 E0
+            Copy N+1 시작: Z_hop → XY_travel(+offset) → Z_down → print(+offset)
+        """
         header, layers, footer = [], [], []
         current_layer_lines = []
-        current_z = None
-        has_extruded = False
+        current_print_z = None
         state = "HEADER"
 
-        # 패턴 정의
-        z_pattern = re.compile(r"G[01].*Z([-+]?\d*\.?\d+)")
-        e_pattern = re.compile(r"E([-+]?\d*\.?\d+)")
+        z_pat = re.compile(r"^G[01]\s[^;\n]*Z([-+]?\d*\.?\d+)")
+        prev_z = None
+        # pending: Z_hop 이후 XY_travel 라인들을 임시 보관
+        # Z_down 시점에 새 레이어이면 → 새 레이어의 앞에 붙임
+        #                 같은 레이어이면 → 현재 레이어에 붙임
+        pending = []
+        in_pending = False
 
-        for line in lines:
-            # 1. 헤더 구간: 슬라이서 설정 시작(G21) 전까지
+        for i, line in enumerate(lines):
+            # ── HEADER ──────────────────────────────────────────────────
             if state == "HEADER":
+                header.append(line)
                 if "G21" in line:
                     state = "BODY"
-                    current_layer_lines.append(line)
-                else:
-                    header.append(line)
                 continue
 
-            # 2. 본문 구간: 실제 출력 레이어들
+            # ── BODY ────────────────────────────────────────────────────
             if state == "BODY":
-                # 푸터 시작 징후 감지 (Slic3r 종료 코드 패턴)
-                if line.startswith(("; Filament-specific end gcode", "M104", "G91", ";080816")):
+                # footer 감지
+                if "; Filament-specific end gcode" in line or \
+                        (line.strip() == "G91" and i > 50):
                     state = "FOOTER"
+                    # pending이 남아 있으면 현재 레이어에 포함
+                    current_layer_lines.extend(pending)
+                    pending = []
+                    if current_layer_lines:
+                        layers.append((current_print_z, current_layer_lines))
                     footer.append(line)
                     continue
 
-                z_match = z_pattern.search(line)
-                e_match = e_pattern.search(line)
-                if e_match: has_extruded = True
+                m_z = z_pat.match(line)
 
-                if z_match:
-                    new_z = float(z_match.group(1))
-                    # 압출이 발생한 후 Z값이 변해야 레이어 변경으로 간주 (Z=5.0 -> Z=0.7 합치기용)
-                    if has_extruded and current_z is not None and abs(new_z - current_z) > 0.1:
-                        layers.append((current_z, current_layer_lines))
-                        current_layer_lines, has_extruded = [line], False
-                        current_z = new_z
+                if m_z:
+                    z_val = float(m_z.group(1))
+
+                    if prev_z is not None and z_val > prev_z + 0.5:
+                        # ── Z 올라감 (Z-hop 시작) ──
+                        # 이전 pending이 아직 남아 있으면 현재 레이어에 귀속
+                        if in_pending:
+                            current_layer_lines.extend(pending)
+                        pending = [line]
+                        in_pending = True
+                        prev_z = z_val
+                        continue
+
+                    elif prev_z is not None and z_val < prev_z - 0.5 and in_pending:
+                        # ── Z 내려옴 (print height 도달) ──
+                        if current_print_z is None:
+                            # 첫 번째 레이어
+                            current_print_z = z_val
+                            current_layer_lines.extend(pending)
+                            pending = []
+                            in_pending = False
+                            current_layer_lines.append(line)
+                        elif abs(z_val - current_print_z) > 0.05:
+                            # 새로운 print height → 새 레이어
+                            layers.append((current_print_z, current_layer_lines))
+                            # pending([Z_hop, XY_travel...])을 새 레이어 앞에 배치
+                            current_layer_lines = list(pending)
+                            pending = []
+                            in_pending = False
+                            current_print_z = z_val
+                            current_layer_lines.append(line)  # Z_down
+                        else:
+                            # 같은 print height → 동일 레이어의 다음 세그먼트
+                            current_layer_lines.extend(pending)
+                            pending = []
+                            in_pending = False
+                            current_layer_lines.append(line)
+                        prev_z = z_val
+                        continue
+
                     else:
-                        current_layer_lines.append(line)
-                        if current_z is None: current_z = new_z
+                        # 그 외 Z 변화 (헤더 영역 Z 등)
+                        if in_pending:
+                            current_layer_lines.extend(pending)
+                            pending = []
+                            in_pending = False
+                        prev_z = z_val
+
+                # pending 중이면 pending 버퍼에, 아니면 현재 레이어에 추가
+                if in_pending:
+                    pending.append(line)
                 else:
                     current_layer_lines.append(line)
-            
-            # 3. 푸터 구간: 모든 출력이 끝난 뒤 1번만 실행될 코드
+                continue
+
+            # ── FOOTER ──────────────────────────────────────────────────
+            if state == "FOOTER":
+                footer.append(line)
+
+        return header, layers, footer
+
+    def split_gcode_by_object(self, lines):
+        header, blocks, footer = [], [], []
+        current_block = []
+        state = "HEADER"
+        
+        for line in lines:
+            if state == "HEADER":
+                header.append(line)
+                if "G21" in line: state = "OBJECT"
+                continue
+
+            if state == "OBJECT":
+                if "; Filament-specific end gcode" in line or "G91" in line:
+                    state = "FOOTER"
+                    if current_block:
+                        # (0.0, 리스트) 형태로 저장하여 언패킹 에러 방지
+                        blocks.append((0.0, current_block)) 
+                    footer.append(line)
+                    continue
+                current_block.append(line)
+
             elif state == "FOOTER":
                 footer.append(line)
 
-        if current_layer_lines:
-            layers.append((current_z, current_layer_lines))
-        
-        return header, layers, footer
+        if current_block and state != "FOOTER":
+            blocks.append((0.0, current_block))
+            
+        return header, blocks, footer
 
     def transform_line(self, line, offset_x, offset_y):
         # X, Y 좌표를 찾아 오프셋을 더함
@@ -474,10 +575,10 @@ class VirtualSD:
             # self.gcode.get_mutex().__exit__()
             
             # move to capture point
-            self.gcode._process_commands("G28\nG91\nG1 E-50\nG90\nG1 X-25 Y100 Z95 F30000\n".split("\n"), need_ack=True)
+            self.gcode._process_commands("G28\nG91\nG1 E-50\nG90\nG1 X-25 Y100 Z50 F30000\n".split("\n"), need_ack=True)
             if self.gcode.get_mutex():
                 logging.info("waiting for gcode mutex to release for bed center calibration2")
-                self.reactor.pause(self.reactor.monotonic() + 15.0)
+                self.reactor.pause(self.reactor.monotonic() + 8.0)
 
             logging.info("Positioned for bed center calibration")
 
@@ -502,36 +603,8 @@ class VirtualSD:
             logging.info(f"Calibrated coords: {calib_coords}")
             # logging.info(f"First element: {calib_coords[0]}")
 
-            def split_gcode_by_layer(lines):
-                # Z 이동이 여러 번 나와도, X/Y 이동이 나올 때만 layer를 분리
-                layers = []
-                current_layer = []
-                current_z = None
-                pending_z = None
-                z_pattern = re.compile(r"[Gg]0?[1][^;\n]*Z([-+]?\d*\.?\d+)")
-                xy_pattern = re.compile(r"[Gg]0?[1][^;\n]*(X|Y)")
-                for line in lines:
-                    m_z = z_pattern.search(line)
-                    m_xy = xy_pattern.search(line)
-                    if m_z and not m_xy:
-                        # Z 이동만 있는 경우, 분리 보류
-                        pending_z = float(m_z.group(1))
-                        current_layer.append(line)
-                    elif m_xy:
-                        # X/Y 이동이 있는 경우, layer 분리
-                        if pending_z is not None and (current_z is None or abs(pending_z - current_z) > 1e-5):
-                            if current_layer:
-                                layers.append((current_z, current_layer))
-                            current_layer = [line]
-                            current_z = pending_z
-                            pending_z = None
-                        else:
-                            current_layer.append(line)
-                    else:
-                        current_layer.append(line)
-                if current_layer:
-                    layers.append((current_z, current_layer))
-                return layers
+            # 인라인 split_gcode_by_layer 제거됨.
+            # self.split_gcode_by_layer() 메서드 사용 (Z-drop 기반, Z-hop/travel 블록 처리 포함)
 
             def calibrate_layer_block(layer_lines, calib_coord, printer_center):
                 pattern_x = re.compile(r"X([-+]?\d*\.?\d+)")
@@ -571,7 +644,8 @@ class VirtualSD:
             with open(inputfile, "r", encoding="utf-8") as f:
                 all_lines = f.readlines()
 
-            header, layers, footer = self.split_gcode_optimized(all_lines)
+            # header, layers, footer = self.split_gcode_by_object(all_lines)
+            header, layers, footer = self.split_gcode_by_layer(all_lines)
 
             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -593,29 +667,6 @@ class VirtualSD:
                         
                 fout.write("\n; --- END OF PRINT (FOOTER) ---\n")
                 fout.writelines(footer)
-
-            # with open(inputfile, "r", encoding="utf-8") as f:
-            #     first_line = f.readline()
-            #     if first_line.startswith('; calibrated data by bed center calibration'):
-            #         logging.info("Already calibrated file detected. Aborting to prevent double calibration.")
-            #         if os.path.exists(outputfile):
-            #             os.remove(outputfile)
-            #         filename = self.file_name
-            #         self._load_file(self.gcode, filename, check_subdirs=True)
-            #         logging.info(f"Loading already calibrated file: {filename}")
-            #     else:
-            #         lines = [first_line] + f.readlines()
-            #         layers = split_gcode_by_layer(lines)
-            #         with open(outputfile, "w", encoding="utf-8") as fout:
-            #             fout.write(f'; multi-center calibrated data by bed center calibration ({datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")})\n')
-            #             for z, layer_lines in layers:
-            #                 fout.write(f'\n; ---- Layer Z={z} ----\n')
-            #                 for idx, calib_coord in enumerate(calib_coords):
-            #                     logging.info("Applying calibration center %d: %s", idx+1, calib_coord)
-            #                     fout.write(f'; -- Calib center {idx+1}: {calib_coord} --\n')
-            #                     block = calibrate_layer_block(layer_lines, calib_coord, printer_center)
-            #                     fout.writelines(block)
-            #                     fout.write('\n')
 
             filename = os.path.join("calib", outputfilename)
             self._load_file(self.gcode, filename, check_subdirs=True)
