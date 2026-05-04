@@ -49,6 +49,8 @@ class PrintStats:
         self.custom_points = -1
 
         self.available_bed_mesh = config.has_section("bed_mesh")
+        self.available_input_shaper = config.has_section("input_shaper")
+        self.available_z_calibration = config.has_section("probe")
         
 
     def _handle_activate_extruder(self):
@@ -214,6 +216,8 @@ class PrintStats:
                      'current_layer': self.info_current_layer},
             'available_camera': self.bed_center_calibration.get_is_available_camera(),
             'available_bed_mesh': self.available_bed_mesh,
+            'available_input_shaper': self.available_input_shaper,
+            'available_z_calibration': self.available_z_calibration,
         }
     def get_calc_print_time(self):
         self.total_time = self.calc_print_time.calc_time(build_layers = True)
