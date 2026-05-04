@@ -644,8 +644,8 @@ class VirtualSD:
             with open(inputfile, "r", encoding="utf-8") as f:
                 all_lines = f.readlines()
 
-            # header, layers, footer = self.split_gcode_by_object(all_lines)
-            header, layers, footer = self.split_gcode_by_layer(all_lines)
+            header, layers, footer = self.split_gcode_by_object(all_lines)
+            # header, layers, footer = self.split_gcode_by_layer(all_lines)
 
             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 

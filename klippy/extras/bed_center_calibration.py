@@ -127,7 +127,7 @@ class BedCenterCalibration:
         
         return int(round(pixel_radius))
     
-    def calc_calib_coord(self, camshow = False):
+    def calc_calib_coord(self):
         logging.info("Starting bed center calibration...")
         try:
             cap = cv2.VideoCapture(self.get_available_cameras()[0])
@@ -143,6 +143,7 @@ class BedCenterCalibration:
             logging.error(f"Failed to open camera: {e}")
             return "Failed to open camera"
         
+        self.moving_avg_center = [None] * 20
         self.calib_coord = None
 
         self.camera_matrix, self.dist_coeffs, self.h_matrix, self.delta_h = self.load_calibration_data(CALIB_FILE_PATH)
@@ -173,18 +174,13 @@ class BedCenterCalibration:
             gray = cv2.cvtColor(img_roi, cv2.COLOR_BGR2GRAY)
             blurred = cv2.GaussianBlur(gray, (5, 5), 0)
 
-            # 2. Canny Edge 적용
-            # 변수: 100(낮은 임계값), 200(높은 임계값) -> 이 수치를 조절하는 것이 핵심입니다.
             edges = cv2.Canny(blurred, 50, 95)
 
-            # 3. 엣지 연결 (모폴로지 연산)
-            # 엣지가 끊어져 있으면 컨투어가 제대로 안 따지므로 선을 살짝 두껍게 만듭니다.
             kernel = np.ones((3,3), np.uint8)
             # kernel = None
-            edges = cv2.dilate(edges, kernel, iterations=5) # 팽창
-            edges = cv2.erode(edges, kernel, iterations=5)  # 수축 (끊어진 선 연결 후 복구)
+            edges = cv2.dilate(edges, kernel, iterations=5)
+            edges = cv2.erode(edges, kernel, iterations=5)
 
-            # 4. 컨투어 추출 (Canny 결과물은 이미 이진화된 상태와 같음)
             contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             target_centers = []
@@ -248,7 +244,6 @@ class BedCenterCalibration:
                 for pt in target_centers:
                     matched = False
                     for group in detected_groups:
-                        # 그룹의 현재 평균값(이동평균) 계산
                         avg_x = sum(p[0] for p in group) / len(group)
                         avg_y = sum(p[1] for p in group) / len(group)
                         
@@ -259,7 +254,6 @@ class BedCenterCalibration:
                             break
                     
                     if not matched:
-                        # 새로운 대상이 발견됨
                         detected_groups.append([pt])
                 logging.info(f"Frame {success_count} processed. Groups: {len(detected_groups)}")
             else:
@@ -268,13 +262,11 @@ class BedCenterCalibration:
 
             final_calib_coords = []
             for group in detected_groups:
-                if len(group) >= 3: # 최소 3회 이상 인식된 그룹만 신뢰 (노이즈 제거)
+                if len(group) >= 3:
                     avg_px = sum(p[0] for p in group) / len(group)
                     avg_py = sum(p[1] for p in group) / len(group)
                     
-                    # 여기서 h_matrix를 사용하여 최종 프린터 좌표(mm)로 변환
-                    # target_mm = self.apply_homography(avg_px, avg_py) 
-                    final_calib_coords.append((avg_px, avg_py)) # 우선 픽셀로 저장
+                    final_calib_coords.append((avg_px, avg_py))
             
             logging.info(f"Detected target centers: {final_calib_coords}")
             if try_count >= 3:
@@ -304,28 +296,15 @@ class BedCenterCalibration:
                 target_idx = 0
                 for center in final_calib_coords:
                     cx, cy = center
-                    # pixel_coord[target_idx] = np.array([[cx, cy]])
-                    # self.calib_coord[target_idx] = cv2.perspectiveTransform(np.array([pixel_coord[target_idx]]), self.get_h_matrix_new())
-                    # self.moving_avg_center[target_idx] = (self.alpha * self.calib_coord[target_idx][0][0]) + (1 - self.alpha) * (self.moving_avg_center[target_idx] if self.moving_avg_center[target_idx] is not None else self.calib_coord[target_idx][0][0])
-                    pixel_pt = np.array([[[cx, cy]]], dtype=np.float32)
-                    transformed_pt = cv2.perspectiveTransform(pixel_pt, self.get_h_matrix_new())
-                    current_coord = transformed_pt[0][0]
-
                     if self.moving_avg_center[target_idx] is None:
-                        new_avg = current_coord
+                        new_avg = np.array([cx, cy], dtype=np.float64)
                     else:
-                        new_avg = (self.alpha * current_coord) + (1 - self.alpha) * self.moving_avg_center[target_idx]
+                        new_avg = (self.alpha * np.array([cx, cy], dtype=np.float64)
+                                   + (1 - self.alpha) * self.moving_avg_center[target_idx])
 
                     self.moving_avg_center[target_idx] = new_avg
-                    logging.info(f"calculated pos: {self.moving_avg_center[target_idx]}")
+                    logging.info(f"pixel EMA[{target_idx}]: {self.moving_avg_center[target_idx]}")
                     target_idx += 1
-                    
-            # if camshow:
-            #     s_width = int(frame2.shape[1] * self.resize_percent / 100)
-            #     s_height = int(frame2.shape[0] * self.resize_percent / 100)
-            #     dim = (s_width, s_height)
-            #     frame2 = cv2.resize(frame2, dim, interpolation = cv2.INTER_AREA)
-            #     cv2.imshow('frame', frame2)
 
             if success_count >= 5:
                 break          
@@ -337,18 +316,17 @@ class BedCenterCalibration:
             return "Failed to detect circle"
         
         if self.moving_avg_center is not None:
-            final_list = []
+            world_list = []
             for item in self.moving_avg_center:
                 if item is not None:
-                    # item이 Numpy array이든 리스트이든 상관없이 [x, y]로 변환
-                    val = item.tolist() if hasattr(item, 'tolist') else item
-                    # 만약 val이 [[x, y]] 처럼 감싸져 있다면 벗겨냄
-                    while isinstance(val, list) and len(val) == 1 and isinstance(val[0], list):
-                        val = val[0]
-                    final_list.append(val)
-            
-            logging.info(f"Final Clean Coords: {final_list}") # 로그에 [[x, y], [x, y]]로 찍혀야 함
-            return final_list
+                    px_avg = np.array([[[float(item[0]), float(item[1])]]], dtype=np.float32)
+                    world_pt = cv2.perspectiveTransform(px_avg, self.get_h_matrix_new())[0][0]
+                    world_list.append(world_pt.tolist())
+
+            world_list.sort(key=lambda p: p[0])
+
+            logging.info(f"Final Clean Coords: {world_list}")
+            return world_list
 
         return self.moving_avg_center
     
