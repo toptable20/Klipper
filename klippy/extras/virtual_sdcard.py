@@ -60,7 +60,6 @@ class VirtualSD:
 
         self.purge_sensing = self.printer.load_object(config, 'purge_sensing')
         self.temp_humi_sensing = self.printer.load_object(config, 'temp_humi_sensing')
-        # self.purge_retries = 0
         self.finish_purge_sequence = True
 
     def handle_shutdown(self):
@@ -170,7 +169,6 @@ class VirtualSD:
         
         self._reset_file()
         filename = gcmd.get("FILENAME")
-        
 
         stop_marker = "G21 ; set units to millimeters"
         logging.info(f"Purge on print start? check purge: {self.print_stats.get_purge_on_print_start()}")
@@ -236,7 +234,6 @@ class VirtualSD:
                     else:
                         logging.info("No purge pattern found, writing header unchanged")
 
-
                 if self.print_stats.get_bed_mesh_on_print_start():
                     if re.search(re_custom_commented, content):
                         content = re.sub(re_custom_commented, fr"\1{insert_code_name}", content, count=1)
@@ -281,8 +278,6 @@ class VirtualSD:
 
         except Exception as e:
             logging.exception(f"virtual_sdcard modifier error: {e}")
-
-
 
         self.file_name = filename
         if filename[0] == '/':
@@ -402,27 +397,20 @@ class VirtualSD:
 
         z_pat = re.compile(r"^G[01]\s[^;\n]*Z([-+]?\d*\.?\d+)")
         prev_z = None
-        # pending: Z_hop 이후 XY_travel 라인들을 임시 보관
-        # Z_down 시점에 새 레이어이면 → 새 레이어의 앞에 붙임
-        #                 같은 레이어이면 → 현재 레이어에 붙임
         pending = []
         in_pending = False
 
         for i, line in enumerate(lines):
-            # ── HEADER ──────────────────────────────────────────────────
             if state == "HEADER":
                 header.append(line)
                 if "G21" in line:
                     state = "BODY"
                 continue
 
-            # ── BODY ────────────────────────────────────────────────────
             if state == "BODY":
-                # footer 감지
                 if "; Filament-specific end gcode" in line or \
                         (line.strip() == "G91" and i > 50):
                     state = "FOOTER"
-                    # pending이 남아 있으면 현재 레이어에 포함
                     current_layer_lines.extend(pending)
                     pending = []
                     if current_layer_lines:
@@ -436,8 +424,6 @@ class VirtualSD:
                     z_val = float(m_z.group(1))
 
                     if prev_z is not None and z_val > prev_z + 0.5:
-                        # ── Z 올라감 (Z-hop 시작) ──
-                        # 이전 pending이 아직 남아 있으면 현재 레이어에 귀속
                         if in_pending:
                             current_layer_lines.extend(pending)
                         pending = [line]
@@ -446,25 +432,20 @@ class VirtualSD:
                         continue
 
                     elif prev_z is not None and z_val < prev_z - 0.5 and in_pending:
-                        # ── Z 내려옴 (print height 도달) ──
                         if current_print_z is None:
-                            # 첫 번째 레이어
                             current_print_z = z_val
                             current_layer_lines.extend(pending)
                             pending = []
                             in_pending = False
                             current_layer_lines.append(line)
                         elif abs(z_val - current_print_z) > 0.05:
-                            # 새로운 print height → 새 레이어
                             layers.append((current_print_z, current_layer_lines))
-                            # pending([Z_hop, XY_travel...])을 새 레이어 앞에 배치
                             current_layer_lines = list(pending)
                             pending = []
                             in_pending = False
                             current_print_z = z_val
-                            current_layer_lines.append(line)  # Z_down
+                            current_layer_lines.append(line)
                         else:
-                            # 같은 print height → 동일 레이어의 다음 세그먼트
                             current_layer_lines.extend(pending)
                             pending = []
                             in_pending = False
@@ -473,21 +454,18 @@ class VirtualSD:
                         continue
 
                     else:
-                        # 그 외 Z 변화 (헤더 영역 Z 등)
                         if in_pending:
                             current_layer_lines.extend(pending)
                             pending = []
                             in_pending = False
                         prev_z = z_val
 
-                # pending 중이면 pending 버퍼에, 아니면 현재 레이어에 추가
                 if in_pending:
                     pending.append(line)
                 else:
                     current_layer_lines.append(line)
                 continue
 
-            # ── FOOTER ──────────────────────────────────────────────────
             if state == "FOOTER":
                 footer.append(line)
 
@@ -508,7 +486,6 @@ class VirtualSD:
                 if "; Filament-specific end gcode" in line or "G91" in line:
                     state = "FOOTER"
                     if current_block:
-                        # (0.0, 리스트) 형태로 저장하여 언패킹 에러 방지
                         blocks.append((0.0, current_block)) 
                     footer.append(line)
                     continue
@@ -523,14 +500,12 @@ class VirtualSD:
         return header, blocks, footer
 
     def transform_line(self, line, offset_x, offset_y):
-        # X, Y 좌표를 찾아 오프셋을 더함
         def replace_coord(match):
-            prefix = match.group(1) # X or Y
+            prefix = match.group(1)  # X or Y
             val = float(match.group(2))
             new_val = val + (offset_x if prefix == 'X' else offset_y)
             return f"{prefix}{new_val:.3f}"
 
-        # G0~G3 명령에 대해서만 좌표 변환 수행
         if line.startswith(("G0", "G1", "G2", "G3")):
             line = re.sub(r"([XY])([-+]?\d*\.?\d+)", replace_coord, line)
         return line
@@ -542,12 +517,10 @@ class VirtualSD:
         is_calib_name = any(x in self.file_name for x in ["_multi_calib", "_calib"])
         if is_calib_name:
             logging.info(f"Already calibrated file detected. Aborting to prevent double calibration. {self.file_name}")
-        
+
         elif self.print_stats.get_bed_center_calibration():
             logging.info("Bed center calibration required before print start")
-            # mutex lock to prevent gcode command conflict
-            # self.gcode.get_mutex().__exit__()
-            
+
             # move to capture point
             self.gcode._process_commands("G28\nG91\nG1 E-50\nG90\nG1 X-25 Y100 Z50 F30000\n".split("\n"), need_ack=True)
             if self.gcode.get_mutex():
@@ -556,13 +529,11 @@ class VirtualSD:
 
             logging.info("Positioned for bed center calibration")
 
-
-            # 여러 calib_coord를 지원하는 새로운 함수 호출
-            # 예시: calib_coords = [(x1, y1), (x2, y2), ...]
             coords = self.bed_center_calibration.calc_calib_coord()
             calib_coords = [coords] if coords is not None else []
 
-            while len(calib_coords) == 1 and isinstance(calib_coords[0], list) and len(calib_coords[0]) > 0 and isinstance(calib_coords[0][0], list):
+            while len(calib_coords) == 1 and isinstance(calib_coords[0], list) \
+                    and len(calib_coords[0]) > 0 and isinstance(calib_coords[0][0], list):
                 logging.info("Nesting detected, stripping one layer of brackets")
                 calib_coords = calib_coords[0]
 
@@ -571,40 +542,14 @@ class VirtualSD:
             if not calib_coords or any(c is None or (isinstance(c, str) and "F" in c) for c in calib_coords):
                 error_message = "Bed center calibration failed" if not calib_coords else str(calib_coords)
                 self.work_timer = None
-                self.gcode.respond_raw(f"Error: {error_message}")
+                self.gcode.respond_raw(f"!! Error: {error_message}")
+                self.gcode.run_script("G1 X-100 Y205 Z10 F3000\nG91\nG1 E50\nG90")
                 return self.reactor.NEVER
 
             logging.info(f"Calibrated coords: {calib_coords}")
-            # logging.info(f"First element: {calib_coords[0]}")
 
-            # 인라인 split_gcode_by_layer 제거됨.
-            # self.split_gcode_by_layer() 메서드 사용 (Z-drop 기반, Z-hop/travel 블록 처리 포함)
-
-            def calibrate_layer_block(layer_lines, calib_coord, printer_center):
-                pattern_x = re.compile(r"X([-+]?\d*\.?\d+)")
-                pattern_y = re.compile(r"Y([-+]?\d*\.?\d+)")
-                result = []
-                cx, cy = calib_coord 
-                cx = float(cx)
-                cy = float(cy)
-                for line in layer_lines:
-                    if line.startswith(("G0", "G1")):
-                        new_line = line
-                        match_x = pattern_x.search(line)
-                        if match_x:
-                            x_val = float(match_x.group(1))
-                            new_x = cx - printer_center[0] + x_val
-                            new_line = pattern_x.sub(f"X{new_x:.3f}", new_line)
-                        match_y = pattern_y.search(line)
-                        if match_y:
-                            y_val = float(match_y.group(1))
-                            new_y = cy - printer_center[1] + y_val
-                            new_line = pattern_y.sub(f"Y{new_y:.3f}", new_line)
-                        result.append(new_line)
-                    else:
-                        result.append(line)
-                return result
-
+            detect_type = self.bed_center_calibration.detect_type
+            printer_center = 102.5, 102.5
             inputfile = os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", self.file_name)
             base, ext = os.path.splitext(self.file_name)
             outputfilename = f"{base}_calib{ext}"
@@ -612,35 +557,63 @@ class VirtualSD:
             if not os.path.exists(outdir):
                 os.makedirs(outdir)
             outputfile = os.path.join(outdir, outputfilename)
-
-            printer_center = 102.5, 102.5
-
-            with open(inputfile, "r", encoding="utf-8") as f:
-                all_lines = f.readlines()
-
-            header, layers, footer = self.split_gcode_by_object(all_lines)
-            # header, layers, footer = self.split_gcode_by_layer(all_lines)
-
             now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            with open(outputfile, "w", encoding="utf-8") as fout:
-                fout.write(f"; multi-center calibrated data by bed center calibration ({now_str})\n")
-                fout.write("; --- START OF PRINT (HEADER) ---\n")
-                fout.writelines(header)
+            if detect_type == 0: # circle mode
+                calib_coord = calib_coords[0]
+                pattern_x = re.compile(r"X([-+]?\d*\.?\d+)")
+                pattern_y = re.compile(r"Y([-+]?\d*\.?\d+)")
 
-                for z, layer_lines in layers:
-                    fout.write(f"\n; --- START LAYER Z={z} ---\n")
-                    for i, coord in enumerate(calib_coords):
-                        off_x = float(coord[0]) - printer_center[0]
-                        off_y = float(coord[1]) - printer_center[1]
-                        
-                        fout.write(f"; -- Copy {i} (Offset X:{off_x:.2f}, Y:{off_y:.2f}) --\n")
+                with open(inputfile, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
 
-                        for line in layer_lines:
-                            fout.write(self.transform_line(line, off_x, off_y))
-                        
-                fout.write("\n; --- END OF PRINT (FOOTER) ---\n")
-                fout.writelines(footer)
+                modified_lines = []
+                for line in lines:
+                    if line.startswith(("G0", "G1")):
+                        new_line = line
+                        match_x = pattern_x.search(line)
+                        if match_x:
+                            x_val = float(match_x.group(1))
+                            new_x = calib_coord[0] - printer_center[0] + x_val
+                            new_line = pattern_x.sub(f"X{new_x:.3f}", new_line)
+                        match_y = pattern_y.search(line)
+                        if match_y:
+                            y_val = float(match_y.group(1))
+                            new_y = calib_coord[1] - printer_center[1] + y_val
+                            new_line = pattern_y.sub(f"Y{new_y:.3f}", new_line)
+                        modified_lines.append(new_line)
+                    else:
+                        modified_lines.append(line)
+
+                with open(outputfile, "w", encoding="utf-8") as f:
+                    f.write(f"; calibrated data by bed center calibration ({now_str})\n")
+                    f.writelines(modified_lines)
+
+            elif detect_type == 1:   # unstructured mode
+                with open(inputfile, "r", encoding="utf-8") as f:
+                    all_lines = f.readlines()
+
+                if self.bed_center_calibration.print_sequence == 0: # One at a Time
+                    header, layers, footer = self.split_gcode_by_object(all_lines)
+                else: # All at Once
+                    header, layers, footer = self.split_gcode_by_layer(all_lines)
+
+                with open(outputfile, "w", encoding="utf-8") as fout:
+                    fout.write(f"; multi-center calibrated data by bed center calibration ({now_str})\n")
+                    fout.write("; --- START OF PRINT (HEADER) ---\n")
+                    fout.writelines(header)
+
+                    for z, layer_lines in layers:
+                        fout.write(f"\n; --- START LAYER Z={z} ---\n")
+                        for i, coord in enumerate(calib_coords):
+                            off_x = float(coord[0]) - printer_center[0]
+                            off_y = float(coord[1]) - printer_center[1]
+                            fout.write(f"; -- Copy {i} (Offset X:{off_x:.2f}, Y:{off_y:.2f}) --\n")
+                            for line in layer_lines:
+                                fout.write(self.transform_line(line, off_x, off_y))
+
+                    fout.write("\n; --- END OF PRINT (FOOTER) ---\n")
+                    fout.writelines(footer)
 
             filename = os.path.join("calib", outputfilename)
             self._load_file(self.gcode, filename, check_subdirs=True)

@@ -175,6 +175,7 @@ class PrintStats:
         detect_type = gcmd.get_int("VALUE", self.detect_type)
         self.detect_type = detect_type
         logging.info("Set bed center calibration detect type to %s (0: circle, 1: unstructured)", self.detect_type)
+        self.bed_center_calibration.set_detect_type(detect_type)
     def cmd_SET_PURGE_ON_PRINT_START(self, gcmd):
         self.need_purge_on_print_start = gcmd.get_int("ENABLE", self.need_purge_on_print_start, minval = 0)
         logging.info("Set purge on print start to %d", self.need_purge_on_print_start)
