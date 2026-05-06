@@ -315,7 +315,7 @@ class BedMesh:
         web_request.send(result)
 
     def set_target_height(self, height):
-        self.horizontal_move_z = height + 20    # offset 20mm
+        self.horizontal_move_z = height + 10    # offset 10mm
         logging.info(f"set horizontal z to {self.horizontal_move_z}")
 
 

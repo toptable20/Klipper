@@ -26,9 +26,33 @@ class PrintStats:
         self.need_bed_center_calibration = 0
         self.need_purge_on_print_start = 0
         self.need_bed_mesh_on_print_start = 0
+
+        self.target_height = 0
+        self.target_radius = 0
+        self.target_number = 0
+        self.print_sequence = 0
+        self.detect_type = 'circle'
+
         self.gcode.register_command(
             "SET_BED_CENTER_CALIBRATION", self.cmd_SET_BED_CENTER_CALIBRATION,
             desc=self.cmd_SET_BED_CENTER_CALIBRATION_help)
+        self.gcode.register_command(
+            "SET_DETECT_TYPE", self.cmd_SET_DETECT_TYPE,
+            desc=self.cmd_SET_DETECT_TYPE_help)
+        self.gcode.register_command(
+            "SET_TARGET_HEIGHT", self.cmd_SET_TARGET_HEIGHT,
+            desc=self.cmd_SET_TARGET_HEIGHT_help)
+        self.gcode.register_command(
+            "SET_TARGET_RADIUS", self.cmd_SET_TARGET_RADIUS,
+            desc=self.cmd_SET_TARGET_RADIUS_help)
+        
+        self.gcode.register_command(
+            "SET_TARGET_NUMBER", self.cmd_SET_TARGET_NUMBER,
+            desc=self.cmd_SET_TARGET_NUMBER_help)
+        self.gcode.register_command(
+            "SET_PRINT_SEQUENCE", self.cmd_SET_PRINT_SEQUENCE,
+            desc=self.cmd_SET_PRINT_SEQUENCE_help)
+        
         self.gcode.register_command(
             "SET_PURGE_ON_PRINT_START", self.cmd_SET_PURGE_ON_PRINT_START,
             desc=self.cmd_SET_PURGE_ON_PRINT_START_help)
@@ -132,14 +156,25 @@ class PrintStats:
 
     cmd_SET_BED_CENTER_CALIBRATION_help = "Enable or disable bed center " \
                                          "calibration requirement for print start"
+    cmd_SET_DETECT_TYPE_help = "Set bed center calibration detect type (circle or unstructured)"
+    cmd_SET_TARGET_HEIGHT_help = "Set target height for bed center calibration"
+    cmd_SET_TARGET_RADIUS_help = "Set target radius for bed center calibration"
+
     cmd_SET_PURGE_ON_PRINT_START_help = "Enable or disable purge on " \
                                             "print start"
     cmd_SET_BED_MESH_ON_PRINT_START_help = "Enable or disable bed mesh " \
                                             "requirement for print start"
     cmd_SET_MESH_POINT_help = "Set Bed Mesh Point"
+    cmd_SET_TARGET_NUMBER_help = "Set target number for bed center calibration"
+    cmd_SET_PRINT_SEQUENCE_help = "Set print sequence for bed center calibration"
+
     def cmd_SET_BED_CENTER_CALIBRATION(self, gcmd):
         self.need_bed_center_calibration = gcmd.get_int("ENABLE", self.need_bed_center_calibration, minval = 0)
         logging.info("Set bed center calibration to %d", self.need_bed_center_calibration)
+    def cmd_SET_DETECT_TYPE(self, gcmd):
+        detect_type = gcmd.get_int("VALUE", self.detect_type)
+        self.detect_type = detect_type
+        logging.info("Set bed center calibration detect type to %s (0: circle, 1: unstructured)", self.detect_type)
     def cmd_SET_PURGE_ON_PRINT_START(self, gcmd):
         self.need_purge_on_print_start = gcmd.get_int("ENABLE", self.need_purge_on_print_start, minval = 0)
         logging.info("Set purge on print start to %d", self.need_purge_on_print_start)
@@ -150,6 +185,30 @@ class PrintStats:
         custom_points = gcmd.get_int('VALUE', self.custom_points, minval = 3)
         self.custom_points = custom_points
         logging.info(f"Get bed mesh custom point: {self.custom_points}")
+    def cmd_SET_TARGET_HEIGHT(self, gcmd):
+        target_height = gcmd.get_int('VALUE', self.target_height, minval = 0)
+        self.target_height = target_height
+        gcmd.respond_info("target_height: Set target height set to %d mm" % (self.target_height,))
+        self.bed_center_calibration.set_height(self.target_height)
+        if self.available_bed_mesh:
+            bed_mesh = self.printer.lookup_object('bed_mesh')
+            bed_mesh.set_target_height(target_height)
+            logging.info(f"set horizontal z to {target_height}+20mm")
+    def cmd_SET_TARGET_RADIUS(self, gcmd):
+        target_radius = gcmd.get_int('VALUE', self.target_radius, minval = 0)
+        self.target_radius = target_radius
+        gcmd.respond_info("target_radius: Set target radius set to %d mm" % (self.target_radius,))
+        self.bed_center_calibration.set_radius(self.target_radius)
+    def cmd_SET_TARGET_NUMBER(self, gcmd):
+        target_number = gcmd.get_int('VALUE', self.target_number, minval = 1)
+        self.target_number = target_number
+        gcmd.respond_info("target_number: Set target number set to %d" % (self.target_number,))
+        self.bed_center_calibration.set_target_number(target_number)
+    def cmd_SET_PRINT_SEQUENCE(self, gcmd):
+        print_sequence = gcmd.get_int('ENABLE', self.print_sequence, minval = 0)
+        self.print_sequence = print_sequence
+        gcmd.respond_info("print_sequence: Set print sequence set to %d (0: One at a Time, 1: All at Once)" % (self.print_sequence,))
+        self.bed_center_calibration.set_print_sequence(print_sequence)
         
 
     def get_bed_center_calibration(self):

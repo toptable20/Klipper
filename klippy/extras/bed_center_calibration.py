@@ -46,6 +46,10 @@ class BedCenterCalibration:
         self.input_radius = 0
         self.available_cameras = []
 
+        self.target_number = 0
+        self.print_sequence = 0
+        self.detect_type = 'circle'
+
         for i in range(max_devices):
             device_path = f"/dev/video{i}"
             if os.path.exists(device_path):
@@ -104,6 +108,15 @@ class BedCenterCalibration:
         if radius - self.margin < 0:
             radius = self.margin
         self.target_r_mm = radius
+
+    def set_target_number(self, number):
+        self.target_number = number
+
+    def set_print_sequence(self, sequence):
+        self.print_sequence = sequence
+
+    def set_detect_type(self, detect_type):
+        self.detect_type = detect_type
 
     def mm_to_pixel_radius(self, radius_mm, h_matrix_new):
         h_pixel_to_world = h_matrix_new
