@@ -31,7 +31,7 @@ class PrintStats:
         self.target_radius = 0
         self.target_number = 0
         self.print_sequence = 0
-        self.detect_type = 'circle'
+        self.detect_type = 0
 
         self.gcode.register_command(
             "SET_BED_CENTER_CALIBRATION", self.cmd_SET_BED_CENTER_CALIBRATION,
@@ -63,6 +63,15 @@ class PrintStats:
             'SET_MESH_POINT', self.cmd_SET_MESH_POINT,
             desc=self.cmd_SET_MESH_POINT_help)
         
+        # for test
+        self.gcode.register_command(
+            'SET_CAM_CALIB_STATE', self.cmd_SET_CAM_CALIB_STATE,
+            desc=self.cmd_SET_CAM_CALIB_STATE_help)
+        
+        self.gcode.register_command(
+            "CAMCALIB_WAIT_DONE", self.cmd_CAMCALIB_WAIT_DONE,
+            desc=self.cmd_CAMCALIB_WAIT_DONE_help)
+        
         self.bed_center_calibration = self.printer.load_object(config, 'bed_center_calibration')
         self.temp_humi_sensing = self.printer.load_object(config, 'temp_humi_sensing')
         
@@ -71,6 +80,7 @@ class PrintStats:
         self.cap_cuts = [830, 1155, 1485, 1805, 2200]
 
         self.custom_points = -1
+        self.calib_wait_flag = False
 
         self.available_bed_mesh = config.has_section("bed_mesh")
         self.available_input_shaper = config.has_section("input_shaper")
@@ -123,6 +133,10 @@ class PrintStats:
     def note_printing(self):
         if self.state == "heating":
             self.state = "printing"
+    def note_camcalib_start(self):
+        self.state = "camcalib"
+    def note_camcalib_complete(self):
+        self.state = "standby"
     def _note_finish(self, state, error_message = ""):
         if self.print_start_time is None:
             return
@@ -210,6 +224,20 @@ class PrintStats:
         self.print_sequence = print_sequence
         gcmd.respond_info("print_sequence: Set print sequence set to %d (0: One at a Time, 1: All at Once)" % (self.print_sequence,))
         self.bed_center_calibration.set_print_sequence(print_sequence)
+
+    cmd_SET_CAM_CALIB_STATE_help = "Set state for test"
+    def cmd_SET_CAM_CALIB_STATE(self, gcmd):
+        if self.state != "camcalib":
+            self.state = "camcalib"
+        else:
+            self.state = "standby"
+
+    cmd_CAMCALIB_WAIT_DONE_help = "Wait for bed center calibration to complete before starting print"
+    def cmd_CAMCALIB_WAIT_DONE(self, gcmd):
+        sdcard = self.printer.lookup_object('virtual_sdcard', None)
+        calib_wait_flag = gcmd.get("VALUE", self.calib_wait_flag)
+        logging.info("calib wait flag set to: %s", calib_wait_flag)
+        sdcard.calib_wait_flag = bool(calib_wait_flag)
         
 
     def get_bed_center_calibration(self):
