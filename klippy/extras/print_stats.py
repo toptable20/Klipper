@@ -63,11 +63,6 @@ class PrintStats:
             'SET_MESH_POINT', self.cmd_SET_MESH_POINT,
             desc=self.cmd_SET_MESH_POINT_help)
         
-        # for test
-        self.gcode.register_command(
-            'SET_CAM_CALIB_STATE', self.cmd_SET_CAM_CALIB_STATE,
-            desc=self.cmd_SET_CAM_CALIB_STATE_help)
-        
         self.gcode.register_command(
             "CAMCALIB_WAIT_DONE", self.cmd_CAMCALIB_WAIT_DONE,
             desc=self.cmd_CAMCALIB_WAIT_DONE_help)
@@ -182,6 +177,8 @@ class PrintStats:
     cmd_SET_TARGET_NUMBER_help = "Set target number for bed center calibration"
     cmd_SET_PRINT_SEQUENCE_help = "Set print sequence for bed center calibration"
 
+    cmd_CAMCALIB_WAIT_DONE_help = "Wait for bed center calibration to complete before starting print"
+
     def cmd_SET_BED_CENTER_CALIBRATION(self, gcmd):
         self.need_bed_center_calibration = gcmd.get_int("ENABLE", self.need_bed_center_calibration, minval = 0)
         logging.info("Set bed center calibration to %d", self.need_bed_center_calibration)
@@ -224,21 +221,10 @@ class PrintStats:
         self.print_sequence = print_sequence
         gcmd.respond_info("print_sequence: Set print sequence set to %d (0: One at a Time, 1: All at Once)" % (self.print_sequence,))
         self.bed_center_calibration.set_print_sequence(print_sequence)
-
-    cmd_SET_CAM_CALIB_STATE_help = "Set state for test"
-    def cmd_SET_CAM_CALIB_STATE(self, gcmd):
-        if self.state != "camcalib":
-            self.state = "camcalib"
-        else:
-            self.state = "standby"
-
-    cmd_CAMCALIB_WAIT_DONE_help = "Wait for bed center calibration to complete before starting print"
     def cmd_CAMCALIB_WAIT_DONE(self, gcmd):
         sdcard = self.printer.lookup_object('virtual_sdcard', None)
         calib_wait_flag = gcmd.get("VALUE", self.calib_wait_flag)
-        logging.info("calib wait flag set to: %s", calib_wait_flag)
         sdcard.calib_wait_flag = bool(calib_wait_flag)
-        
 
     def get_bed_center_calibration(self):
         return self.need_bed_center_calibration

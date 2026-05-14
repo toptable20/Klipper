@@ -59,6 +59,7 @@ class VirtualSD:
         self.gcode_move = self.printer.load_object(config, 'gcode_move')
         # Calibration wait flag
         self.calib_wait_flag = False
+        self.calib_done_flag = False
 
         self.purge_sensing = self.printer.load_object(config, 'purge_sensing')
         self.temp_humi_sensing = self.printer.load_object(config, 'temp_humi_sensing')
@@ -135,7 +136,7 @@ class VirtualSD:
         if self.work_timer is not None:
             raise self.gcode.error("SD busy")
         self.must_pause_work = False
-        if self.print_stats.get_bed_center_calibration():
+        if self.print_stats.get_bed_center_calibration() and not self.calib_done_flag:
             self.print_stats.note_camcalib_start()
             self.get_calib_coord()
             # Non-blocking: register timer to wait for calib_wait_flag
@@ -150,7 +151,10 @@ class VirtualSD:
             # Timer 즉시 정지 (파일 닫기 전에)
             if self.work_timer is not None:
                 self.must_pause_work = True
-                self.reactor.unregister_timer(self.work_timer)
+                try:
+                    self.reactor.unregister_timer(self.work_timer)
+                except ValueError:
+                    pass
                 self.work_timer = None
             self.current_file.close()
             self.current_file = None
@@ -184,6 +188,7 @@ class VirtualSD:
         
         self._reset_file()
         filename = gcmd.get("FILENAME")
+        self.calib_done_flag = False
 
         stop_marker = "G21 ; set units to millimeters"
         logging.info(f"Purge on print start? check purge: {self.print_stats.get_purge_on_print_start()}")
@@ -437,6 +442,13 @@ class VirtualSD:
 
                 if m_z:
                     z_val = float(m_z.group(1))
+                    logging.info(f"z_val: {z_val}, prev_z: {prev_z}, current_print_z: {current_print_z}, in_pending: {in_pending}")
+
+                    # z_val: 5.0, prev_z: None, current_print_z: None, in_pending: False
+                    # z_val: 0.7, prev_z: 5.0, current_print_z: None, in_pending: False
+                    # z_val: 5.7, prev_z: 0.7, current_print_z: 0.7, in_pending: False
+                    # z_val: 1.4, prev_z: 5.7, current_print_z: 0.7, in_pending: True
+                    # z_val: 6.4, prev_z: 1.4, current_print_z: 1.4, in_pending: False
 
                     if prev_z is not None and z_val > prev_z + 0.5:
                         if in_pending:
@@ -445,25 +457,34 @@ class VirtualSD:
                         in_pending = True
                         prev_z = z_val
                         continue
-
-                    elif prev_z is not None and z_val < prev_z - 0.5 and in_pending:
-                        if current_print_z is None:
-                            current_print_z = z_val
-                            current_layer_lines.extend(pending)
-                            pending = []
-                            in_pending = False
-                            current_layer_lines.append(line)
-                        elif abs(z_val - current_print_z) > 0.05:
-                            layers.append((current_print_z, current_layer_lines))
-                            current_layer_lines = list(pending)
-                            pending = []
-                            in_pending = False
+                    elif prev_z is not None and z_val < prev_z - 0.5:
+                        if in_pending:
+                            if current_print_z is None:
+                                current_print_z = z_val
+                                current_layer_lines.extend(pending)
+                                pending = []
+                                in_pending = False
+                                current_layer_lines.append(line)
+                            elif abs(z_val - current_print_z) > 0.05:
+                                layers.append((current_print_z, current_layer_lines))
+                                current_layer_lines = list(pending)
+                                pending = []
+                                in_pending = False
+                                current_print_z = z_val
+                                current_layer_lines.append(line)
+                            else:
+                                current_layer_lines.extend(pending)
+                                pending = []
+                                in_pending = False
+                                current_layer_lines.append(line)
+                        elif current_print_z is None:
                             current_print_z = z_val
                             current_layer_lines.append(line)
                         else:
-                            current_layer_lines.extend(pending)
-                            pending = []
-                            in_pending = False
+                            if abs(z_val - current_print_z) > 0.05:
+                                layers.append((current_print_z, current_layer_lines))
+                                current_layer_lines = []
+                                current_print_z = z_val
                             current_layer_lines.append(line)
                         prev_z = z_val
                         continue
@@ -533,7 +554,6 @@ class VirtualSD:
         elif self.print_stats.get_bed_center_calibration():
             logging.info("Bed center calibration required before print start")
 
-            # move to capture point
             self.gcode._process_commands("G28\nG91\nG1 E-50\nG90\nG1 X-25 Y100 Z50 F30000\n".split("\n"), need_ack=True)
             if self.gcode.get_mutex():
                 logging.info("waiting for gcode mutex to release for bed center calibration2")
@@ -631,10 +651,8 @@ class VirtualSD:
             self._load_file(self.gcode, filename, check_subdirs=True)
             logging.info(f"Loading file: {filename}")
 
-            # Non-blocking: 대기는 _check_calib_and_start_print timer에서 처리됨
-            self.calib_wait_flag = False  # 대기 시작 전 False로 초기화
+            self.calib_wait_flag = False
             logging.info("Waiting for calib_wait_flag to become True...")
-            # Note: run_script는 timer에서만 호출되므로 여기서는 하지 않음
 
     # Timer to check calib_wait_flag and start printing
     def _check_calib_and_start_print(self, eventtime):
@@ -642,10 +660,10 @@ class VirtualSD:
         if self.calib_wait_flag:
             logging.info("calib_wait_flag detected, proceeding with print.")
             
-            # Back to home position before print start (여기서만 실행)
             self.gcode.run_script("G1 X-100 Y205 Z10 F3000\nG91\nG1 E50\nG90")
             
             self.print_stats.note_camcalib_complete()
+            self.calib_done_flag = True
             
             logging.info("Starting SD card print (position %d)", self.file_position)
             self.reactor.unregister_timer(self.work_timer)
@@ -656,7 +674,6 @@ class VirtualSD:
                 self.work_timer = None
                 return self.reactor.NEVER
             
-            # Now start the work handler for actual printing
             self.work_timer = self.reactor.register_timer(
                 self.work_handler, self.reactor.NOW)
             return self.reactor.NEVER
@@ -666,14 +683,20 @@ class VirtualSD:
             return self.reactor.NEVER
         else:
             # Still waiting for calib_wait_flag, check again in 0.5 seconds
-            logging.info(f"self.current_file: {self.current_file}")
-            logging.info("wait for signal")
             return eventtime + 0.5
     
 
     # Background work timer
     def work_handler(self, eventtime):
         error_message = None
+        logging.info("Starting SD card print (position %d)", self.file_position)
+        self.reactor.unregister_timer(self.work_timer)
+        try:
+            self.current_file.seek(self.file_position)
+        except:
+            logging.exception("virtual_sdcard seek")
+            self.work_timer = None
+            return self.reactor.NEVER
         self.print_stats.note_start()
         gcode_mutex = self.gcode.get_mutex()
         partial_input = ""
