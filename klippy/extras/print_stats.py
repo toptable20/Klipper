@@ -205,7 +205,7 @@ class PrintStats:
         if self.available_bed_mesh:
             bed_mesh = self.printer.lookup_object('bed_mesh')
             bed_mesh.set_target_height(target_height)
-            logging.info(f"set horizontal z to {target_height}+20mm")
+            logging.info(f"set horizontal z to {target_height}+10mm")
     def cmd_SET_TARGET_RADIUS(self, gcmd):
         target_radius = gcmd.get_int('VALUE', self.target_radius, minval = 0)
         self.target_radius = target_radius

@@ -147,8 +147,6 @@ class VirtualSD:
                 self.work_handler, self.reactor.NOW)
     def do_cancel(self):
         if self.current_file is not None:
-            logging.info("do cancel and clear current file")
-            # Timer 즉시 정지 (파일 닫기 전에)
             if self.work_timer is not None:
                 self.must_pause_work = True
                 try:
@@ -158,7 +156,6 @@ class VirtualSD:
                 self.work_timer = None
             self.current_file.close()
             self.current_file = None
-            logging.info(f"self.current_file: {self.current_file}")
             self.print_stats.note_cancel()
         self.file_position = self.file_size = 0
     # G-Code commands
