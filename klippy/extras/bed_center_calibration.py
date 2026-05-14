@@ -49,6 +49,7 @@ class BedCenterCalibration:
         self.target_number = 0
         self.print_sequence = 0
         self.detect_type = 0  # 'circle' or 'unstructured'
+        self.detected_circle_center = None
 
         for i in range(max_devices):
             device_path = f"/dev/video{i}"
@@ -205,6 +206,7 @@ class BedCenterCalibration:
             return "Failed to detect circle"
 
         if moving_avg is not None:
+            self.detected_circle_center = (float(moving_avg[0]), float(moving_avg[1]))
             return [moving_avg.tolist()]  # 다중 좌표 포맷과 통일: [[x, y]]
         return "Failed to detect circle"
 

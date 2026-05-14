@@ -581,15 +581,18 @@ class BedMeshCalibrate:
             self.mesh_config[key] = self.orig_config[key]
 
         eventtime = self.printer.get_reactor().monotonic()
-        if self.print_stats.get_bed_center_calibration() and self.print_stats.get_status(eventtime)['state'] == 'printing':
-            bed_center = self.bed_center_calibration.moving_avg_center
-            # bed_center = 100, 100 # dummy value for now
-            logging.info(
-                "bed_mesh: Overriding MESH_ORIGIN with "
-                "bed_center_calibration values: (%.2f, %.2f)"
-                % (bed_center[0], bed_center[1])
-            )
-            self.origin = bed_center
+        if (self.print_stats.get_bed_center_calibration()
+                and self.print_stats.get_status(eventtime)['state'] == 'printing'
+                and self.bed_center_calibration.detect_type == 0):  # circle 모드일 때만 적용
+            detected = self.bed_center_calibration.detected_circle_center
+            if detected is not None:
+                bed_center = (float(detected[0]), float(detected[1]))
+                logging.info(
+                    "bed_mesh: Overriding MESH_ORIGIN with "
+                    "bed_center_calibration values: (%.2f, %.2f)"
+                    % (bed_center[0], bed_center[1])
+                )
+                self.origin = bed_center
 
         self.custom_points = self.print_stats.get_bed_mesh_custom_points()
         if self.custom_points != -1:
