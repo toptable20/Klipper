@@ -80,6 +80,7 @@ class PrintStats:
         self.available_bed_mesh = config.has_section("bed_mesh")
         self.available_input_shaper = config.has_section("input_shaper")
         self.available_z_calibration = config.has_section("probe")
+        self.available_purge_sensing = config.has_section("purge_setting")
         
 
     def _handle_activate_extruder(self):
@@ -292,6 +293,7 @@ class PrintStats:
             'available_bed_mesh': self.available_bed_mesh,
             'available_input_shaper': self.available_input_shaper,
             'available_z_calibration': self.available_z_calibration,
+            'available_purge_sensing': self.available_purge_sensing,
         }
     def get_calc_print_time(self):
         self.total_time = self.calc_print_time.calc_time(build_layers = True)
