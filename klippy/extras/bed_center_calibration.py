@@ -156,8 +156,8 @@ class BedCenterCalibration:
             img_undistorted = cv2.undistort(frame, self.camera_matrix, self.dist_coeffs, None, self.camera_matrix)
             img_roi = img_undistorted[printbed_roi[1]:printbed_roi[1]+printbed_roi[3], printbed_roi[0]:printbed_roi[0]+printbed_roi[2]]
 
-            min_r = np.clip(self.mm_to_pixel_radius(self.target_r_mm - self.margin, self.h_matrix_new), 0, 100)
-            max_r = np.clip(self.mm_to_pixel_radius(self.target_r_mm + self.margin, self.h_matrix_new), 0, 100)
+            min_r = max(0, self.mm_to_pixel_radius(self.target_r_mm - self.margin, self.h_matrix_new))
+            max_r = max(min_r + 1, self.mm_to_pixel_radius(self.target_r_mm + self.margin, self.h_matrix_new))
 
             img_roi = cv2.GaussianBlur(img_roi, (self.k_size, self.k_size), self.sig_x)
             gray = cv2.cvtColor(img_roi, cv2.COLOR_BGR2GRAY)
