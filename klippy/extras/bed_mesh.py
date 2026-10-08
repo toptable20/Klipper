@@ -315,8 +315,20 @@ class BedMesh:
         web_request.send(result)
 
     def set_target_height(self, height):
-        self.horizontal_move_z = height + 10    # offset 10mm
-        logging.info(f"set horizontal z to {self.horizontal_move_z}")
+        requested_height = height + 20    # offset 10mm
+        probe = self.printer.lookup_object('probe', None)
+        if probe is not None:
+            z_offset = probe.get_offsets()[2]
+            if requested_height < z_offset:
+                logging.warning(
+                    "bed_mesh: horizontal_move_z %.3f is below probe "
+                    "z_offset %.3f; using probe z_offset",
+                    requested_height, z_offset)
+                requested_height = z_offset
+        self.horizontal_move_z = requested_height
+        self.bmc.set_horizontal_move_z(self.horizontal_move_z)
+        logging.info("bed_mesh: set horizontal_move_z to %.3f",
+                     self.horizontal_move_z)
 
 
 class ZrefMode:
@@ -656,6 +668,8 @@ class BedMeshCalibrate:
                 self.mesh_config, self.mesh_min, self.mesh_max,
                 self.radius, self.origin, probe_method
             )
+    def set_horizontal_move_z(self, height):
+        self.probe_mgr.set_horizontal_move_z(height)
     def dump_calibration(self, gcmd=None):
         if gcmd is not None and gcmd.get_command_parameters():
             self.update_config(gcmd)
@@ -854,6 +868,10 @@ class ProbeManager:
         self.probe_helper.use_xy_offsets(True)
         self.rapid_scan_helper = RapidScanHelper(config, self, finalize_cb)
         self._init_faulty_regions(config)
+
+    def set_horizontal_move_z(self, height):
+        self.probe_helper.default_horizontal_move_z = height
+        self.rapid_scan_helper.scan_height = height
 
     def _init_faulty_regions(self, config):
         for i in list(range(1, 100, 1)):
@@ -1263,7 +1281,7 @@ class RapidScanHelper:
             return
         pparams = pprobe.get_probe_params(gcmd)
         lift_speed = pparams["lift_speed"]
-        cur_pos[2] = self.scan_height + .5
+        cur_pos[2] = scan_height + .5
         toolhead.manual_move(cur_pos, lift_speed)
 
     def _move_to_scan_height(self, gcmd, scan_height):
