@@ -57,6 +57,7 @@ class BedCenterCalibration:
         self.print_sequence = 0
         self.detect_type = 0  # 'circle' or 'unstructured'
         self.detected_circle_center = None
+        self.detected_circle_radius = None
 
         for i in range(max_devices):
             device_path = f"/dev/video{i}"
@@ -151,6 +152,9 @@ class BedCenterCalibration:
         fail_count = 0
         success_count = 0
         moving_avg = None
+        moving_avg_radius = None
+        self.detected_circle_center = None
+        self.detected_circle_radius = None
 
         while fail_count < 10 and cap.isOpened():
             ret, frame = cap.read()
@@ -186,9 +190,11 @@ class BedCenterCalibration:
 
             logging.info(f"Circles detected {circles}")
             cx = cy = 0
+            circle_radius = 0
             for i in circles[0]:
                 cx = i[0] + printbed_roi[0]
                 cy = i[1] + printbed_roi[1]
+                circle_radius = i[2]
                 cv2.circle(frame2, (int(cx), int(cy)), int(i[2]), (0, 0, 255), 2)
                 cv2.circle(frame2, (int(cx), int(cy)), 2, (0, 0, 255), 3)
 
@@ -201,9 +207,26 @@ class BedCenterCalibration:
             pixel_coord = np.array([[cx, cy]], dtype=np.float32)
             calib_coord = cv2.perspectiveTransform(np.array([pixel_coord]), self.h_matrix_new)
 
+            radius_points = np.array([[[cx, cy],
+                                       [cx + circle_radius, cy],
+                                       [cx - circle_radius, cy],
+                                       [cx, cy + circle_radius],
+                                       [cx, cy - circle_radius]]],
+                                     dtype=np.float32)
+            world_radius_points = cv2.perspectiveTransform(
+                radius_points, self.h_matrix_new)[0]
+            radius_mm = np.mean(np.linalg.norm(
+                world_radius_points[1:] - world_radius_points[0], axis=1))
+
             moving_avg = (self.alpha * calib_coord[0][0]) + \
                          (1 - self.alpha) * (moving_avg if moving_avg is not None else calib_coord[0][0])
+            moving_avg_radius = (self.alpha * radius_mm) + \
+                                (1 - self.alpha) * (moving_avg_radius
+                                    if moving_avg_radius is not None
+                                    else radius_mm)
             logging.info(f"calculated pos: {moving_avg}")
+            logging.info("calculated circle radius: %.3f mm",
+                         moving_avg_radius)
 
             if success_count >= 5:
                 break
@@ -214,6 +237,7 @@ class BedCenterCalibration:
 
         if moving_avg is not None:
             self.detected_circle_center = (float(moving_avg[0]), float(moving_avg[1]))
+            self.detected_circle_radius = float(moving_avg_radius)
             return [moving_avg.tolist()]  # 다중 좌표 포맷과 통일: [[x, y]]
         return "Failed to detect circle"
 

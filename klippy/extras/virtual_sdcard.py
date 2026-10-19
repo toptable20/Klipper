@@ -137,6 +137,13 @@ class VirtualSD:
             raise self.gcode.error("SD busy")
         self.must_pause_work = False
         if self.print_stats.get_bed_center_calibration() and not self.calib_done_flag:
+            if self._is_calibrated_file():
+                logging.info("Already calibrated file selected; "
+                             "skipping camera calibration")
+                self.calib_done_flag = True
+                self.work_timer = self.reactor.register_timer(
+                    self.work_handler, self.reactor.NOW)
+                return
             self.print_stats.note_camcalib_start()
             self.get_calib_coord()
             # Non-blocking: register timer to wait for calib_wait_flag
@@ -145,17 +152,28 @@ class VirtualSD:
         else:
             self.work_timer = self.reactor.register_timer(
                 self.work_handler, self.reactor.NOW)
+    def _is_calibrated_file(self):
+        filename = (self.file_name or '').replace('\\', '/').lstrip('/')
+        parts = filename.split('/')
+        if len(parts) < 2 or parts[0].lower() != 'calib':
+            return False
+        stem = os.path.splitext(parts[-1])[0]
+        return stem.endswith('_multi_calib') or stem.endswith('_calib')
     def do_cancel(self):
+        had_file = self.current_file is not None
+        had_work = self.work_timer is not None
+        if self.work_timer is not None:
+            self.must_pause_work = True
+            try:
+                self.reactor.unregister_timer(self.work_timer)
+            except ValueError:
+                pass
+            self.work_timer = None
+        self.calib_wait_flag = False
         if self.current_file is not None:
-            if self.work_timer is not None:
-                self.must_pause_work = True
-                try:
-                    self.reactor.unregister_timer(self.work_timer)
-                except ValueError:
-                    pass
-                self.work_timer = None
             self.current_file.close()
             self.current_file = None
+        if had_file or had_work:
             self.print_stats.note_cancel()
         self.file_position = self.file_size = 0
     # G-Code commands
@@ -185,6 +203,7 @@ class VirtualSD:
         
         self._reset_file()
         filename = gcmd.get("FILENAME")
+        filename = self._get_calib_source_filename(filename, gcmd)
         self.calib_done_flag = False
 
         stop_marker = "G21 ; set units to millimeters"
@@ -320,6 +339,8 @@ class VirtualSD:
         filename = gcmd.get_raw_command_parameters().strip()
         if filename.startswith('/'):
             filename = filename[1:]
+        filename = self._get_calib_source_filename(filename, gcmd)
+        self.file_name = filename
         self._load_file(gcmd, filename)
     def _load_file(self, gcmd, filename, check_subdirs=False):
         files = self.get_file_list(check_subdirs)
@@ -377,6 +398,40 @@ class VirtualSD:
         self.next_file_position = pos
     def is_cmd_from_sd(self):
         return self.cmd_from_sd
+
+    def _get_calib_source_filename(self, filename, gcmd):
+        path = filename.replace('\\', '/').lstrip('/')
+        parts = path.split('/')
+        if len(parts) < 2 or parts[0].lower() != 'calib':
+            return filename
+        stem, ext = os.path.splitext(parts[-1])
+        if stem.endswith('_multi_calib'):
+            source_name = stem[:-len('_multi_calib')] + ext
+        elif stem.endswith('_calib'):
+            source_name = stem[:-len('_calib')] + ext
+        else:
+            return filename
+        files = self.get_file_list(check_subdirs=True)
+        candidates = [name for name, size in files
+                      if not name.replace('\\', '/').lower().startswith(
+                          'calib/')
+                      and os.path.basename(name).lower()
+                      == source_name.lower()]
+        if source_name in candidates:
+            source = source_name
+        elif len(candidates) == 1:
+            source = candidates[0]
+        elif not candidates:
+            raise gcmd.error(
+                "Original G-code '%s' for calibrated file '%s' not found"
+                % (source_name, filename))
+        else:
+            raise gcmd.error(
+                "Multiple original G-code files match calibrated file '%s'"
+                % (filename,))
+        logging.info("Restarting calibrated file '%s' from original '%s'",
+                     filename, source)
+        return source
 
     def split_gcode_by_layer(self, lines):
         """
@@ -544,8 +599,7 @@ class VirtualSD:
         return line
     
     def get_calib_coord(self):
-        is_calib_name = any(x in self.file_name for x in ["_multi_calib", "_calib"])
-        if is_calib_name:
+        if self._is_calibrated_file():
             logging.info(f"Already calibrated file detected. Aborting to prevent double calibration. {self.file_name}")
 
         elif self.print_stats.get_bed_center_calibration():
@@ -654,16 +708,27 @@ class VirtualSD:
     # Timer to check calib_wait_flag and start printing
     def _check_calib_and_start_print(self, eventtime):
         self.print_stats = self.printer.lookup_object('print_stats')
+        timer = self.work_timer
+        if self.current_file is None or timer is None:
+            logging.info("Print cancelled during calibration wait")
+            self.calib_wait_flag = False
+            self.work_timer = None
+            return self.reactor.NEVER
         if self.calib_wait_flag:
             logging.info("calib_wait_flag detected, proceeding with print.")
             
             self.gcode.run_script("G1 X-100 Y205 Z10 F3000\nG91\nG1 E50\nG90")
+
+            # A cancel request may run while run_script yields to the reactor.
+            if self.current_file is None or self.work_timer is not timer:
+                logging.info("Print cancelled during calibration completion")
+                return self.reactor.NEVER
             
             self.print_stats.note_camcalib_complete()
             self.calib_done_flag = True
             
             logging.info("Starting SD card print (position %d)", self.file_position)
-            self.reactor.unregister_timer(self.work_timer)
+            self.reactor.unregister_timer(timer)
             try:
                 self.current_file.seek(self.file_position)
             except:

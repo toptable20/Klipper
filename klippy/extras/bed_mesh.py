@@ -402,10 +402,14 @@ class BedMeshCalibrate:
     def _init_mesh_config(self, config):
         mesh_cfg = self.mesh_config
         orig_cfg = self.orig_config
+        self.round_probe_count = config.getint('round_probe_count', 5,
+                                               minval=3)
+        self.round_origin = config.getfloatlist(
+            'mesh_origin', (0., 0.), count=2)
         self.radius = config.getfloat('mesh_radius', None, above=0.)
         if self.radius is not None:
-            self.origin = config.getfloatlist('mesh_origin', (0., 0.), count=2)
-            x_cnt = y_cnt = config.getint('round_probe_count', 5, minval=3)
+            self.origin = self.round_origin
+            x_cnt = y_cnt = self.round_probe_count
             # round beds must have an odd number of points along each axis
             if not x_cnt & 1:
                 raise config.error(
@@ -592,10 +596,16 @@ class BedMeshCalibrate:
         for key in list(self.mesh_config.keys()):
             self.mesh_config[key] = self.orig_config[key]
 
+        need_cfg_update = False
+        target_radius = self.print_stats.get_target_radius()
+        if target_radius > 0:
+            self._set_runtime_mesh_radius(target_radius, None, gcmd)
+            need_cfg_update = True
+
         eventtime = self.printer.get_reactor().monotonic()
         if (self.print_stats.get_bed_center_calibration()
                 and self.print_stats.get_status(eventtime)['state'] == 'printing'
-                and self.bed_center_calibration.detect_type == 0):  # circle 모드일 때만 적용
+                and self.bed_center_calibration.detect_type == 0):  # circle 모드일때만 적용
             detected = self.bed_center_calibration.detected_circle_center
             if detected is not None:
                 bed_center = (float(detected[0]), float(detected[1]))
@@ -605,6 +615,12 @@ class BedMeshCalibrate:
                     % (bed_center[0], bed_center[1])
                 )
                 self.origin = bed_center
+                detected_radius = \
+                    self.bed_center_calibration.detected_circle_radius
+                if detected_radius is not None:
+                    self._set_runtime_mesh_radius(
+                        detected_radius - 10., bed_center, gcmd)
+                    need_cfg_update = True
 
         self.custom_points = self.print_stats.get_bed_mesh_custom_points()
         if self.custom_points != -1:
@@ -612,7 +628,6 @@ class BedMeshCalibrate:
             self.mesh_config['y_count'] = self.custom_points
 
         params = gcmd.get_command_parameters()
-        need_cfg_update = False
         if self.radius is not None:
             if "MESH_RADIUS" in params:
                 self.radius = gcmd.get_float("MESH_RADIUS")
@@ -668,6 +683,26 @@ class BedMeshCalibrate:
                 self.mesh_config, self.mesh_min, self.mesh_max,
                 self.radius, self.origin, probe_method
             )
+    def _set_runtime_mesh_radius(self, radius, origin, gcmd):
+        radius = math.floor(radius * 10.) / 10.
+        if radius <= 0.:
+            raise gcmd.error(
+                "bed_mesh: effective mesh radius must be greater than 0")
+        self.radius = radius
+        self.origin = self.round_origin if origin is None else origin
+        self.mesh_min = (-radius, -radius)
+        self.mesh_max = (radius, radius)
+        if self.orig_config['radius'] is None:
+            if not self.round_probe_count & 1:
+                raise gcmd.error(
+                    "bed_mesh: round_probe_count must be odd for a "
+                    "runtime circular mesh")
+            self.mesh_config['x_count'] = self.mesh_config['y_count'] = \
+                self.round_probe_count
+        logging.info(
+            "bed_mesh: using circular mesh radius %.1f mm, origin (%.2f, %.2f)",
+            self.radius, self.origin[0], self.origin[1])
+
     def set_horizontal_move_z(self, height):
         self.probe_mgr.set_horizontal_move_z(height)
     def dump_calibration(self, gcmd=None):

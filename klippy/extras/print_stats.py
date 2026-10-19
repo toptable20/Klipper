@@ -235,6 +235,8 @@ class PrintStats:
         return self.need_bed_mesh_on_print_start
     def get_bed_mesh_custom_points(self):
         return self.custom_points
+    def get_target_radius(self):
+        return self.target_radius
     
     def reset_filament_remaining(self):
         self.filament_remaining = 0.
