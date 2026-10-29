@@ -8,6 +8,7 @@ import re
 import shutil
 import datetime
 import time
+import math
 
 VALID_GCODE_EXTS = ['gcode', 'g', 'gco']
 
@@ -532,16 +533,42 @@ class VirtualSD:
             
         return header, blocks, footer
 
-    def transform_line(self, line, offset_x, offset_y):
-        def replace_coord(match):
-            prefix = match.group(1)  # X or Y
-            val = float(match.group(2))
-            new_val = val + (offset_x if prefix == 'X' else offset_y)
-            return f"{prefix}{new_val:.3f}"
+    def transform_line(self, line, target_x, target_y, angle_deg,
+                       position_state=None):
+        """Rotate absolute XY positions around the slicer origin, then relocate.
 
-        if line.startswith(("G0", "G1", "G2", "G3")):
-            line = re.sub(r"([XY])([-+]?\d*\.?\d+)", replace_coord, line)
-        return line
+        Arc center offsets I/J are vectors, so they receive rotation only.
+        """
+        if not line.startswith(("G0", "G1", "G2", "G3")):
+            return line
+        angle = math.radians(angle_deg)
+        cos_a, sin_a = math.cos(angle), math.sin(angle)
+        printer_x, printer_y = 102.5, 102.5
+        values = {}
+        for match in re.finditer(r"([XYIJ])([-+]?\d*\.?\d+)", line):
+            values[match.group(1)] = float(match.group(2))
+        if not values:
+            return line
+        x = values.get('X')
+        y = values.get('Y')
+        i = values.get('I')
+        j = values.get('J')
+        replacements = {}
+        if x is not None or y is not None:
+            if position_state is None:
+                position_state = [printer_x, printer_y]
+            point_x = x if x is not None else position_state[0]
+            point_y = y if y is not None else position_state[1]
+            dx, dy = point_x - printer_x, point_y - printer_y
+            replacements['X'] = target_x + dx*cos_a - dy*sin_a
+            replacements['Y'] = target_y + dx*sin_a + dy*cos_a
+            position_state[:] = [point_x, point_y]
+        if i is not None or j is not None:
+            i, j = i or 0.0, j or 0.0
+            replacements['I'] = i*cos_a - j*sin_a
+            replacements['J'] = i*sin_a + j*cos_a
+        return re.sub(r"([XYIJ])([-+]?\d*\.?\d+)",
+                      lambda m: f"{m.group(1)}{replacements[m.group(1)]:.3f}", line)
     
     def get_calib_coord(self):
         is_calib_name = any(x in self.file_name for x in ["_multi_calib", "_calib"])
@@ -558,7 +585,7 @@ class VirtualSD:
 
             logging.info("Positioned for bed center calibration")
 
-            coords = self.bed_center_calibration.calc_calib_coord()
+            coords = self.bed_center_calibration.get_coords_for_print()
             calib_coords = [coords] if coords is not None else []
 
             while len(calib_coords) == 1 and isinstance(calib_coords[0], list) \
@@ -635,11 +662,14 @@ class VirtualSD:
                     for z, layer_lines in layers:
                         fout.write(f"\n; --- START LAYER Z={z} ---\n")
                         for i, coord in enumerate(calib_coords):
-                            off_x = float(coord[0]) - printer_center[0]
-                            off_y = float(coord[1]) - printer_center[1]
-                            fout.write(f"; -- Copy {i} (Offset X:{off_x:.2f}, Y:{off_y:.2f}) --\n")
+                            target_x, target_y = float(coord[0]), float(coord[1])
+                            angle = float(coord[2]) if len(coord) > 2 else 0.0
+                            fout.write(f"; -- Copy {i} (Center X:{target_x:.2f}, Y:{target_y:.2f}, Rotation:{angle:.2f}) --\n")
+                            position_state = [printer_center[0], printer_center[1]]
                             for line in layer_lines:
-                                fout.write(self.transform_line(line, off_x, off_y))
+                                fout.write(self.transform_line(
+                                    line, target_x, target_y, angle,
+                                    position_state))
 
                     fout.write("\n; --- END OF PRINT (FOOTER) ---\n")
                     fout.writelines(footer)

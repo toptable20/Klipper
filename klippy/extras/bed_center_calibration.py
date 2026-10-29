@@ -9,6 +9,8 @@ CALIB_FILE_PATH = "/home/mks/printer_data/config/calib_config.json"
 
 class BedCenterCalibration:
     def __init__(self, config):
+        self.printer = config.get_printer()
+        self.reactor = self.printer.get_reactor()
         
         # 720p
         self.camera_width = 1280
@@ -43,6 +45,7 @@ class BedCenterCalibration:
         self.margin = 10
 
         self.moving_avg_center = [None] * 20
+        self.moving_avg_angle = [None] * 20
         self.alpha = 0.2
 
         # blur filter size
@@ -57,6 +60,20 @@ class BedCenterCalibration:
         self.print_sequence = 0
         self.detect_type = 0  # 'circle' or 'unstructured'
         self.detected_circle_center = None
+        self.detected_targets = []
+        self.selected_target_ids = set()
+        self.target_detection_state = "idle"
+        self.target_detection_error = ""
+        self.target_detection_time = None
+        self.targets_ready = False
+
+        self.gcode = self.printer.lookup_object('gcode')
+        self.gcode.register_command(
+            "BED_CENTER_DETECT", self.cmd_BED_CENTER_DETECT,
+            desc="Detect unstructured bed targets for UI selection")
+        self.gcode.register_command(
+            "BED_CENTER_SET_SELECTION", self.cmd_BED_CENTER_SET_SELECTION,
+            desc="Set selected bed target IDs")
 
         for i in range(max_devices):
             device_path = f"/dev/video{i}"
@@ -75,6 +92,86 @@ class BedCenterCalibration:
             return True
         else:
             return False
+
+    def get_status(self, eventtime=None):
+        targets = []
+        selected_ids = self.selected_target_ids
+        for target in self.detected_targets:
+            item = dict(target)
+            item["selected"] = item["id"] in selected_ids
+            targets.append(item)
+        return {
+            "camera_available": self.get_is_available_camera(),
+            "detect_type": self.detect_type,
+            "detection_state": self.target_detection_state,
+            "detection_error": self.target_detection_error,
+            "detection_time": self.target_detection_time,
+            "target_count": len(targets),
+            "selected_target_ids": sorted(selected_ids),
+            "targets": targets,
+            "targets_ready": self.targets_ready,
+            "print_sequence": self.print_sequence,
+            "target_height": self.input_height,
+        }
+
+    def _ensure_printer_idle(self, gcmd):
+        print_stats = self.printer.lookup_object("print_stats", None)
+        if print_stats is not None and print_stats.state in ("printing", "paused"):
+            raise gcmd.error("Bed target detection/selection is unavailable during a print")
+
+    def cmd_BED_CENTER_DETECT(self, gcmd):
+        self._ensure_printer_idle(gcmd)
+        if self.detect_type != 1:
+            raise gcmd.error(
+                "BED_CENTER_DETECT requires unstructured detect_type=1")
+        self.target_detection_state = "detecting"
+        self.target_detection_error = ""
+        result = self.calc_calib_coord()
+        if not isinstance(result, list) or not result:
+            self.target_detection_state = "error"
+            self.target_detection_error = (
+                result if isinstance(result, str) else "No targets detected")
+            raise gcmd.error(self.target_detection_error)
+        self.targets_ready = True
+        gcmd.respond_info("Detected %d bed targets" % (len(result),))
+
+    def cmd_BED_CENTER_SET_SELECTION(self, gcmd):
+        self._ensure_printer_idle(gcmd)
+        if not self.detected_targets:
+            raise gcmd.error("Run BED_CENTER_DETECT before selecting targets")
+        raw_ids = gcmd.get("TARGETS", "")
+        try:
+            selected_ids = set(int(value.strip()) for value in raw_ids.split(",")
+                               if value.strip())
+        except ValueError:
+            raise gcmd.error("TARGETS must be a comma-separated list of IDs")
+        known_ids = {target["id"] for target in self.detected_targets}
+        unknown_ids = selected_ids - known_ids
+        if unknown_ids:
+            raise gcmd.error("Unknown target ID(s): %s"
+                             % ", ".join(str(i) for i in sorted(unknown_ids)))
+        self.selected_target_ids = selected_ids
+        self.targets_ready = True
+        gcmd.respond_info("Selected bed targets: %s" %
+                          (", ".join(str(i) for i in sorted(selected_ids))
+                           if selected_ids else "none",))
+
+    def get_coords_for_print(self):
+        if self.detect_type != 1:
+            return self.calc_calib_coord()
+        if not self.targets_ready:
+            coords = self.calc_calib_coord()
+            if not isinstance(coords, list):
+                return coords
+        else:
+            coords = [[target["x"], target["y"], target["angle"]]
+                      for target in self.detected_targets]
+        selected = [coord for target, coord in zip(self.detected_targets, coords)
+                    if target["id"] in self.selected_target_ids]
+        self.targets_ready = False
+        if not selected:
+            return []
+        return selected
 
     def load_calibration_data(self, file_path):
         with open(file_path, 'r') as f:
@@ -220,6 +317,7 @@ class BedCenterCalibration:
     def _detect_contour(self, cap):
         printbed_roi = self.get_camera_roi()
         self.moving_avg_center = [None] * 20
+        self.moving_avg_angle = [None] * 20
 
         fail_count = 0
         success_count = 0
@@ -299,7 +397,10 @@ class BedCenterCalibration:
                     color, 1
                 )
 
-                target_centers.append((abs_x, abs_y))
+                (_, _), (rw, rh), rect_angle = cv2.minAreaRect(approx)
+                if rw < rh:
+                    rect_angle += 90.0
+                target_centers.append((abs_x, abs_y, rect_angle))
 
             if target_centers:
                 threshold = 50
@@ -325,15 +426,21 @@ class BedCenterCalibration:
                 if len(group) >= 3:
                     avg_px = sum(p[0] for p in group) / len(group)
                     avg_py = sum(p[1] for p in group) / len(group)
-                    final_calib_coords.append((avg_px, avg_py))
+                    sin_a = sum(np.sin(np.deg2rad(p[2] * 2)) for p in group)
+                    cos_a = sum(np.cos(np.deg2rad(p[2] * 2)) for p in group)
+                    avg_angle = np.rad2deg(np.arctan2(sin_a, cos_a)) / 2.0
+                    final_calib_coords.append((avg_px, avg_py, avg_angle))
 
             if self.target_number > 0:
                 scored = sorted(
-                    [(g, sum(p[0] for p in g)/len(g), sum(p[1] for p in g)/len(g))
+                    [(g, sum(p[0] for p in g)/len(g), sum(p[1] for p in g)/len(g),
+                      np.rad2deg(np.arctan2(
+                          sum(np.sin(np.deg2rad(p[2] * 2)) for p in g),
+                          sum(np.cos(np.deg2rad(p[2] * 2)) for p in g))) / 2.0)
                     for g in detected_groups if len(g) >= 3],
                     key=lambda x: len(x[0]), reverse=True
                 )[:self.target_number]
-                final_calib_coords = [(s[1], s[2]) for s in scored]
+                final_calib_coords = [(s[1], s[2], s[3]) for s in scored]
 
             logging.info(f"Detected target centers: {final_calib_coords}")
 
@@ -353,13 +460,23 @@ class BedCenterCalibration:
 
                 target_idx = 0
                 for center in final_calib_coords:
-                    cx, cy = center
+                    cx, cy, angle = center
                     if self.moving_avg_center[target_idx] is None:
                         new_avg = np.array([cx, cy], dtype=np.float64)
                     else:
                         new_avg = (self.alpha * np.array([cx, cy], dtype=np.float64)
                                    + (1 - self.alpha) * self.moving_avg_center[target_idx])
                     self.moving_avg_center[target_idx] = new_avg
+                    old_angle = self.moving_avg_angle[target_idx]
+                    if old_angle is None:
+                        new_angle = angle
+                    else:
+                        old_a = np.deg2rad(old_angle * 2)
+                        new_a = np.deg2rad(angle * 2)
+                        new_angle = np.rad2deg(np.arctan2(
+                            self.alpha*np.sin(new_a) + (1-self.alpha)*np.sin(old_a),
+                            self.alpha*np.cos(new_a) + (1-self.alpha)*np.cos(old_a))) / 2.0
+                    self.moving_avg_angle[target_idx] = new_angle
                     logging.info(f"pixel EMA[{target_idx}]: {self.moving_avg_center[target_idx]}")
                     target_idx += 1
 
@@ -370,19 +487,50 @@ class BedCenterCalibration:
             logging.error("Contour detection failed after multiple attempts.")
             return "Failed to detect targets"
 
-        world_list = []
-        for item in self.moving_avg_center:
+        world_targets = []
+        for idx, item in enumerate(self.moving_avg_center):
             if item is not None:
                 px_avg = np.array([[[float(item[0]), float(item[1])]]], dtype=np.float32)
                 world_pt = cv2.perspectiveTransform(px_avg, self.get_h_matrix_new())[0][0]
-                world_list.append(world_pt.tolist())
+                angle = np.deg2rad(float(self.moving_avg_angle[idx] or 0.0))
+                endpoint = np.array([[[float(item[0]) + 20*np.cos(angle),
+                                       float(item[1]) + 20*np.sin(angle)]]], dtype=np.float32)
+                world_end = cv2.perspectiveTransform(endpoint, self.get_h_matrix_new())[0][0]
+                world_angle = np.rad2deg(np.arctan2(world_end[1]-world_pt[1],
+                                                    world_end[0]-world_pt[0]))
+                world_targets.append({
+                    "pixel_x": float(item[0]),
+                    "pixel_y": float(item[1]),
+                    "x": float(world_pt[0]),
+                    "y": float(world_pt[1]),
+                    "angle": float(world_angle),
+                })
 
-        world_list.sort(key=lambda p: p[0])
+        world_targets.sort(key=lambda target: target["x"])
+        self.detected_targets = [
+            dict(target, id=i + 1)
+            for i, target in enumerate(world_targets)]
+        self.selected_target_ids = {
+            target["id"] for target in self.detected_targets}
+        self.targets_ready = bool(self.detected_targets)
+        self.target_detection_state = (
+            "ready" if self.detected_targets else "error")
+        self.target_detection_error = (
+            "" if self.detected_targets else "No targets detected")
+        self.target_detection_time = self.reactor.monotonic()
+        world_list = [[target["x"], target["y"], target["angle"]]
+                      for target in self.detected_targets]
         logging.info(f"Final Clean Coords: {world_list}")
         return world_list
 
     def calc_calib_coord(self):
         logging.info("Starting bed center calibration...")
+        self.target_detection_state = "detecting"
+        self.target_detection_error = ""
+        self.targets_ready = False
+        if self.detect_type == 1:
+            self.detected_targets = []
+            self.selected_target_ids = set()
         try:
             cap = cv2.VideoCapture(self.get_available_cameras()[0])
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.get_camera_size()[0])
@@ -392,9 +540,18 @@ class BedCenterCalibration:
             cap.set(cv2.CAP_PROP_EXPOSURE, 1500)
         except Exception as e:
             logging.error(f"Failed to open camera: {e}")
+            self.target_detection_state = "error"
+            self.target_detection_error = str(e)
             return "Failed to open camera"
 
-        self.camera_matrix, self.dist_coeffs, self.h_matrix, self.delta_h = self.load_calibration_data(CALIB_FILE_PATH)
+        try:
+            self.camera_matrix, self.dist_coeffs, self.h_matrix, self.delta_h = self.load_calibration_data(CALIB_FILE_PATH)
+        except Exception as e:
+            cap.release()
+            logging.exception("Failed to load bed center calibration data")
+            self.target_detection_state = "error"
+            self.target_detection_error = str(e)
+            return "Failed to load calibration data"
         self.h_matrix_new = self.h_matrix + (self.input_height * self.delta_h)
         if self.h_matrix_new[2, 2] != 0:
             self.h_matrix_new = self.h_matrix_new / self.h_matrix_new[2, 2]
@@ -407,6 +564,12 @@ class BedCenterCalibration:
             result = self._detect_contour(cap)
 
         cap.release()
+        if isinstance(result, str):
+            self.target_detection_state = "error"
+            self.target_detection_error = result
+        elif self.detect_type == 0:
+            self.target_detection_state = "ready"
+            self.target_detection_time = self.reactor.monotonic()
         return result
 
 def load_config(config):
