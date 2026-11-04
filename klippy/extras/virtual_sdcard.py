@@ -158,6 +158,8 @@ class VirtualSD:
             self.current_file.close()
             self.current_file = None
             self.print_stats.note_cancel()
+        self.calib_wait_flag = False
+        self.calib_done_flag = False
         self.file_position = self.file_size = 0
     # G-Code commands
     def cmd_error(self, gcmd):

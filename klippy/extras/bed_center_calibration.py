@@ -17,10 +17,10 @@ class BedCenterCalibration:
         self.camera_height = 720
 
         # roi ratios
-        x_p = 0.25
-        y_p = 0.32
-        w_p = 0.30
-        h_p = 0.52
+        x_p = 0.18
+        y_p = 0.25
+        w_p = 0.28
+        h_p = 0.48
 
         # ROI_RATIO = (0.25, 0.32, 0.30, 0.52)
 
