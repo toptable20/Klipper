@@ -140,6 +140,8 @@ class VirtualSD:
         if self.print_stats.get_bed_center_calibration() and not self.calib_done_flag:
             self.print_stats.note_camcalib_start()
             self.get_calib_coord()
+            if self.current_file is None:
+                return
             # Non-blocking: register timer to wait for calib_wait_flag
             self.work_timer = self.reactor.register_timer(
                 self._check_calib_and_start_print, self.reactor.NOW)
@@ -572,7 +574,34 @@ class VirtualSD:
         return re.sub(r"([XYIJ])([-+]?\d*\.?\d+)",
                       lambda m: f"{m.group(1)}{replacements[m.group(1)]:.3f}", line)
     
-    def get_calib_coord(self):
+    def _abort_calibration_print(self, error_message):
+        if self.work_timer is not None:
+            try:
+                self.reactor.unregister_timer(self.work_timer)
+            except ValueError:
+                pass
+            self.work_timer = None
+        if self.current_file is not None:
+            self.current_file.close()
+            self.current_file = None
+        self.file_position = self.file_size = 0
+        self.calib_wait_flag = False
+        self.calib_done_flag = False
+        self.print_stats.note_error(error_message)
+        self.gcode.respond_raw("!! Error: %s" % (error_message,))
+        # This may be called from SDCARD_PRINT_FILE while the G-code mutex is
+        # held. Queue the recovery moves so run_script() can acquire it after
+        # the current command returns.
+        self.reactor.register_callback(
+            self._restore_after_calibration_failure)
+
+    def _restore_after_calibration_failure(self, eventtime):
+        try:
+            self.gcode.run_script("G1 X-100 Y205 Z10 F3000\nG91\nG1 E50\nG90")
+        except Exception:
+            logging.exception("virtual_sdcard calibration failure recovery")
+
+    def get_calib_coord(self, use_selection=False):
         is_calib_name = any(x in self.file_name for x in ["_multi_calib", "_calib"])
         if is_calib_name:
             logging.info(f"Already calibrated file detected. Aborting to prevent double calibration. {self.file_name}")
@@ -580,12 +609,29 @@ class VirtualSD:
         elif self.print_stats.get_bed_center_calibration():
             logging.info("Bed center calibration required before print start")
 
-            self.gcode._process_commands("G28\nG91\nG1 E-50\nG90\nG1 X-25 Y100 Z50 F30000\n".split("\n"), need_ack=True)
-            if self.gcode.get_mutex():
-                logging.info("waiting for gcode mutex to release for bed center calibration2")
-                self.reactor.pause(self.reactor.monotonic() + 8.0)
+            if not use_selection:
+                self.gcode._process_commands("G28\nG91\nG1 E-50\nG90\nG1 X-25 Y100 Z50 F30000\n".split("\n"), need_ack=True)
+                if self.gcode.get_mutex():
+                    logging.info("waiting for gcode mutex to release for bed center calibration2")
+                    self.reactor.pause(self.reactor.monotonic() + 8.0)
 
-            logging.info("Positioned for bed center calibration")
+                logging.info("Positioned for bed center calibration")
+
+            detect_type = self.bed_center_calibration.detect_type
+            if detect_type == 1 and not use_selection:
+                # Keep the original G-code loaded while the UI reviews the
+                # detected targets and sends its final selection.
+                coords = self.bed_center_calibration.calc_calib_coord()
+                if not isinstance(coords, list) or not coords:
+                    error_message = (coords if isinstance(coords, str)
+                                     else "No targets detected")
+                    self._abort_calibration_print(error_message)
+                    return
+                self.print_stats.note_camcalib_ready()
+                self.calib_wait_flag = False
+                logging.info(
+                    "Detected unstructured targets; waiting for UI selection")
+                return
 
             coords = self.bed_center_calibration.get_coords_for_print()
             calib_coords = [coords] if coords is not None else []
@@ -597,16 +643,21 @@ class VirtualSD:
 
             logging.info(f"Final Flattened Calibrated coords: {calib_coords}")
 
-            if not calib_coords or any(c is None or (isinstance(c, str) and "F" in c) for c in calib_coords):
-                error_message = "Bed center calibration failed" if not calib_coords else str(calib_coords)
-                self.work_timer = None
-                self.gcode.respond_raw(f"!! Error: {error_message}")
-                self.gcode.run_script("G1 X-100 Y205 Z10 F3000\nG91\nG1 E50\nG90")
-                return self.reactor.NEVER
+            no_targets_selected = (detect_type == 1 and use_selection
+                                   and isinstance(coords, list) and not coords)
+            invalid_coords = (not calib_coords or any(
+                c is None or isinstance(c, str) for c in calib_coords))
+            if no_targets_selected or invalid_coords:
+                if no_targets_selected:
+                    error_message = "No targets selected for printing"
+                else:
+                    error_message = ("Bed center calibration failed"
+                                     if not calib_coords else str(calib_coords))
+                self._abort_calibration_print(error_message)
+                return
 
             logging.info(f"Calibrated coords: {calib_coords}")
 
-            detect_type = self.bed_center_calibration.detect_type
             printer_center = 102.5, 102.5
             inputfile = os.path.join(os.path.expanduser("~/"), "printer_data", "gcodes", self.file_name)
             base, ext = os.path.splitext(self.file_name)
@@ -661,17 +712,30 @@ class VirtualSD:
                     fout.write("; --- START OF PRINT (HEADER) ---\n")
                     fout.writelines(header)
 
-                    for z, layer_lines in layers:
+                    def write_target_layer(z, layer_lines, i, coord):
                         fout.write(f"\n; --- START LAYER Z={z} ---\n")
+                        target_x, target_y = float(coord[0]), float(coord[1])
+                        angle = float(coord[2]) if len(coord) > 2 else 0.0
+                        fout.write(f"; -- Copy {i} (Center X:{target_x:.2f}, Y:{target_y:.2f}, Rotation:{angle:.2f}) --\n")
+                        position_state = [printer_center[0], printer_center[1]]
+                        for line in layer_lines:
+                            fout.write(self.transform_line(
+                                line, target_x, target_y, angle,
+                                position_state))
+
+                    if self.bed_center_calibration.print_sequence == 0:
+                        # One at a time: finish every block for a target
+                        # before moving on to the next selected target.
                         for i, coord in enumerate(calib_coords):
-                            target_x, target_y = float(coord[0]), float(coord[1])
-                            angle = float(coord[2]) if len(coord) > 2 else 0.0
-                            fout.write(f"; -- Copy {i} (Center X:{target_x:.2f}, Y:{target_y:.2f}, Rotation:{angle:.2f}) --\n")
-                            position_state = [printer_center[0], printer_center[1]]
-                            for line in layer_lines:
-                                fout.write(self.transform_line(
-                                    line, target_x, target_y, angle,
-                                    position_state))
+                            for z, layer_lines in layers:
+                                write_target_layer(z, layer_lines, i, coord)
+                    else:
+                        # All at once: emit one layer for every target before
+                        # advancing to the next layer.
+                        for z, layer_lines in layers:
+                            for i, coord in enumerate(calib_coords):
+                                write_target_layer(
+                                    z, layer_lines, i, coord)
 
                     fout.write("\n; --- END OF PRINT (FOOTER) ---\n")
                     fout.writelines(footer)
@@ -687,7 +751,23 @@ class VirtualSD:
     def _check_calib_and_start_print(self, eventtime):
         self.print_stats = self.printer.lookup_object('print_stats')
         if self.calib_wait_flag:
-            logging.info("calib_wait_flag detected, proceeding with print.")
+            logging.info("calib_wait_flag detected, finalizing calibration.")
+
+            self.calib_wait_flag = False
+            if self.bed_center_calibration.detect_type == 1:
+                try:
+                    self.get_calib_coord(use_selection=True)
+                except Exception as e:
+                    logging.exception(
+                        "Failed to generate selected-target G-code")
+                    self._abort_calibration_print(
+                        "Failed to generate selected-target G-code: %s" % e)
+                    return self.reactor.NEVER
+                if self.current_file is None:
+                    self.work_timer = None
+                    return self.reactor.NEVER
+
+            logging.info("Target selection accepted, proceeding with print.")
             
             self.gcode.run_script("G1 X-100 Y205 Z10 F3000\nG91\nG1 E50\nG90")
             

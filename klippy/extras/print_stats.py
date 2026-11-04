@@ -131,6 +131,9 @@ class PrintStats:
             self.state = "printing"
     def note_camcalib_start(self):
         self.state = "camcalib"
+    def note_camcalib_ready(self):
+        self.state = "ready"
+        self.error_message = ""
     def note_camcalib_complete(self):
         self.state = "standby"
     def _note_finish(self, state, error_message = ""):
