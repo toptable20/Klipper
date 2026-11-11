@@ -596,7 +596,7 @@ class BedMeshCalibrate:
         if (self.print_stats.get_bed_center_calibration()
                 and self.print_stats.get_status(eventtime)['state'] == 'printing'
                 and self.bed_center_calibration.detect_type == 0):  # circle 모드일 때만 적용
-            detected = self.bed_center_calibration.detected_circle_center
+            detected = self.bed_center_calibration.get_corrected_circle_center()
             if detected is not None:
                 bed_center = (float(detected[0]), float(detected[1]))
                 logging.info(
