@@ -131,13 +131,16 @@ class PrintStats:
             self.state = "printing"
     def note_camcalib_start(self):
         self.state = "camcalib"
+    def note_camcalib_ready(self):
+        self.state = "ready"
+        self.error_message = ""
     def note_camcalib_complete(self):
         self.state = "standby"
     def _note_finish(self, state, error_message = ""):
-        if self.print_start_time is None:
-            return
         self.state = state
         self.error_message = error_message
+        if self.print_start_time is None:
+            return
         eventtime = self.reactor.monotonic()
         self.total_duration = eventtime - self.print_start_time
         if self.filament_used < 0.0000001:

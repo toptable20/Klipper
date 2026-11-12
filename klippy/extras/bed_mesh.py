@@ -605,8 +605,8 @@ class BedMeshCalibrate:
         eventtime = self.printer.get_reactor().monotonic()
         if (self.print_stats.get_bed_center_calibration()
                 and self.print_stats.get_status(eventtime)['state'] == 'printing'
-                and self.bed_center_calibration.detect_type == 0):  # circle 모드일때만 적용
-            detected = self.bed_center_calibration.detected_circle_center
+                and self.bed_center_calibration.detect_type == 0):  # circle 모드일 때만 적용
+            detected = self.bed_center_calibration.get_corrected_circle_center()
             if detected is not None:
                 bed_center = (float(detected[0]), float(detected[1]))
                 logging.info(
@@ -628,6 +628,7 @@ class BedMeshCalibrate:
             self.mesh_config['y_count'] = self.custom_points
 
         params = gcmd.get_command_parameters()
+        need_cfg_update = False
         if self.radius is not None:
             if "MESH_RADIUS" in params:
                 self.radius = gcmd.get_float("MESH_RADIUS")
