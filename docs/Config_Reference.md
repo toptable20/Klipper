@@ -1165,6 +1165,12 @@ Visual Examples:
 #adaptive_margin:
 #   An optional margin (in mm) to be added around the bed area used by
 #   the defined print objects when generating an adaptive mesh.
+#gcode_footprint_spacing: 5.0
+#   Spacing (in mm) between probe points when bed center calibration is
+#   enabled for unstructured targets. Points are placed in a staggered
+#   pattern within each transformed G-code extrusion contour. Measurements
+#   are kept in temporary meshes by selected target ID, and the generated
+#   print G-code switches meshes with BED_MESH_SET_FOOTPRINT. Default is 5.0.
 #scan_overshoot:
 #  The maximum amount of travel (in mm) available outside of the mesh.
 #  For rectangular beds this applies to travel on the X axis, and for round beds

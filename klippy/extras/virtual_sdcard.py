@@ -57,6 +57,11 @@ class VirtualSD:
 
         self.bed_center_calibration = self.printer.load_object(config, 'bed_center_calibration')
         self.file_name = None
+        self.original_extrusion_paths = []
+        self.original_extrusion_contours = []
+        self.transformed_extrusion_contours = []
+        self.calibration_targets = []
+        self.calibration_target_ids = []
         self.gcode_move = self.printer.load_object(config, 'gcode_move')
         # Calibration wait flag
         self.calib_wait_flag = False
@@ -191,6 +196,11 @@ class VirtualSD:
         self._reset_file()
         filename = gcmd.get("FILENAME")
         self.calib_done_flag = False
+        self.original_extrusion_paths = []
+        self.original_extrusion_contours = []
+        self.transformed_extrusion_contours = []
+        self.calibration_targets = []
+        self.calibration_target_ids = []
 
         stop_marker = "G21 ; set units to millimeters"
         logging.info(f"Purge on print start? check purge: {self.print_stats.get_purge_on_print_start()}")
@@ -602,9 +612,12 @@ class VirtualSD:
             logging.exception("virtual_sdcard calibration failure recovery")
 
     def get_calib_coord(self, use_selection=False):
-        is_calib_name = any(x in self.file_name for x in ["_multi_calib", "_calib"])
+        file_stem = os.path.splitext(os.path.basename(self.file_name))[0]
+        is_calib_name = file_stem.endswith(("_multi_calib", "_calib"))
         if is_calib_name:
-            logging.info(f"Already calibrated file detected. Aborting to prevent double calibration. {self.file_name}")
+            logging.info(
+                "Already calibrated file detected by suffix; skipping "
+                "recalibration: %s", self.file_name)
 
         elif self.print_stats.get_bed_center_calibration():
             logging.info("Bed center calibration required before print start")
@@ -618,6 +631,10 @@ class VirtualSD:
                 logging.info("Positioned for bed center calibration")
 
             detect_type = self.bed_center_calibration.detect_type
+            logging.info(
+                "Generating calibrated G-code: detect_type=%d, "
+                "use_selection=%s, file=%s",
+                detect_type, use_selection, self.file_name)
             if detect_type == 1 and not use_selection:
                 # Keep the original G-code loaded while the UI reviews the
                 # detected targets and sends its final selection.
@@ -702,10 +719,98 @@ class VirtualSD:
                 with open(inputfile, "r", encoding="utf-8") as f:
                     all_lines = f.readlines()
 
+                self.original_extrusion_paths = self.extract_extrusion_paths(
+                    all_lines)
+                self.original_extrusion_contours = (
+                    self.group_extrusion_paths(self.original_extrusion_paths))
+                self.calibration_targets = [
+                    (float(coord[0]), float(coord[1]),
+                     float(coord[2]) if len(coord) > 2 else 0.)
+                    for coord in calib_coords]
+                self.calibration_target_ids = (
+                    self.bed_center_calibration
+                    .get_selected_target_ids_for_print())
+                if len(self.calibration_target_ids) != len(self.calibration_targets):
+                    self.calibration_target_ids = list(
+                        range(1, len(self.calibration_targets) + 1))
+                self.transformed_extrusion_contours = []
+                for target_index, (target, target_id) in enumerate(zip(
+                        self.calibration_targets, self.calibration_target_ids)):
+                    for contour in self.original_extrusion_contours:
+                        transformed = [
+                            self.transform_calibration_point(point, target)
+                            for point in contour['points']]
+                        self.transformed_extrusion_contours.append({
+                            'target_index': target_index,
+                            'target_id': target_id,
+                            'contour_index': contour['contour_index'],
+                            'layer_z': contour['layer_z'],
+                            'points': transformed,
+                        })
+                logging.info(
+                    "Extracted %d extrusion segments in %d contours; "
+                    "transformed to %d targets from %s",
+                    len(self.original_extrusion_paths),
+                    len(self.original_extrusion_contours),
+                    len(self.calibration_targets), self.file_name)
+
                 if self.bed_center_calibration.print_sequence == 0: # One at a Time
                     header, layers, footer = self.split_gcode_by_object(all_lines)
                 else: # All at Once
                     header, layers, footer = self.split_gcode_by_layer(all_lines)
+
+                # The generic SDCARD_PRINT_FILE header patch runs before the
+                # camera selection flow.  Re-check the final reconstructed
+                # unstructured file so its mesh commands cannot be lost while
+                # splitting and duplicating the G-code.
+                mesh_on_print_start = bool(
+                    self.print_stats.get_bed_mesh_on_print_start())
+                logging.info(
+                    "Rebuilding unstructured G-code %s: "
+                    "bed_mesh_on_print_start=%s, header_lines=%d, "
+                    "footer_lines=%d",
+                    self.file_name, mesh_on_print_start,
+                    len(header), len(footer))
+                if mesh_on_print_start:
+                    active_mesh_start = re.compile(
+                        r"^\s*BED_MESH_CALIBRATE(?:\s|$)", re.MULTILINE)
+                    if not active_mesh_start.search("".join(header)):
+                        marker_index = next(
+                            (index for index, line in enumerate(header)
+                             if "G21" in line), None)
+                        if marker_index is None:
+                            raise ValueError(
+                                "Unable to insert BED_MESH_CALIBRATE: "
+                                "G21 header marker was not found")
+                        header.insert(
+                            marker_index + 1,
+                            "BED_MESH_CALIBRATE PROFILE=default\n")
+                        logging.info(
+                            "Inserted BED_MESH_CALIBRATE into reconstructed "
+                            "unstructured G-code header")
+
+                    active_mesh_clear = re.compile(
+                        r"^\s*BED_MESH_CLEAR(?:\s|$)", re.MULTILINE)
+                    if not active_mesh_clear.search("".join(footer)):
+                        clear_index = next(
+                            (index for index, line in enumerate(footer)
+                             if line.strip() == "G91"), None)
+                        if clear_index is None:
+                            footer.append("BED_MESH_CLEAR\n")
+                        else:
+                            footer.insert(clear_index + 1,
+                                          "BED_MESH_CLEAR\n")
+                        logging.info(
+                            "Inserted BED_MESH_CLEAR into reconstructed "
+                            "unstructured G-code footer")
+                    if not active_mesh_start.search("".join(header)):
+                        raise ValueError(
+                            "BED_MESH_CALIBRATE was requested but could not "
+                            "be placed in the reconstructed G-code header")
+                else:
+                    logging.info(
+                        "No BED_MESH_CALIBRATE inserted into unstructured "
+                        "G-code because bed_mesh_on_print_start is disabled")
 
                 with open(outputfile, "w", encoding="utf-8") as fout:
                     fout.write(f"; multi-center calibrated data by bed center calibration ({now_str})\n")
@@ -714,11 +819,19 @@ class VirtualSD:
 
                     def write_target_layer(z, layer_lines, i, coord):
                         fout.write(f"\n; --- START LAYER Z={z} ---\n")
+                        if mesh_on_print_start:
+                            fout.write(
+                                "BED_MESH_SET_FOOTPRINT TARGET=%d\n" %
+                                (self.calibration_target_ids[i],))
                         target_x, target_y = float(coord[0]), float(coord[1])
                         angle = float(coord[2]) if len(coord) > 2 else 0.0
                         fout.write(f"; -- Copy {i} (Center X:{target_x:.2f}, Y:{target_y:.2f}, Rotation:{angle:.2f}) --\n")
                         position_state = [printer_center[0], printer_center[1]]
                         for line in layer_lines:
+                            if (not mesh_on_print_start
+                                    and line.lstrip().startswith(
+                                        "BED_MESH_SET_FOOTPRINT")):
+                                continue
                             fout.write(self.transform_line(
                                 line, target_x, target_y, angle,
                                 position_state))
@@ -746,6 +859,134 @@ class VirtualSD:
 
             self.calib_wait_flag = False
             logging.info("Waiting for calib_wait_flag to become True...")
+
+    @staticmethod
+    def extract_extrusion_paths(lines):
+        """Return original-coordinate G0/G1 segments that extrude filament."""
+        paths = []
+        position = [0., 0., 0.]
+        e_position = 0.
+        absolute_xyz = True
+        absolute_e = True
+        unit_scale = 1.
+        word_re = re.compile(r"([A-Z])([-+]?(?:\d+(?:\.\d*)?|\.\d+))")
+
+        for line_number, line in enumerate(lines, 1):
+            command_line = line.split(';', 1)[0].strip().upper()
+            if not command_line:
+                continue
+            words = word_re.findall(command_line)
+            if not words:
+                continue
+            command = words[0][0] + words[0][1]
+            params = {key: float(value) for key, value in words[1:]}
+
+            if command == 'G20':
+                unit_scale = 25.4
+                continue
+            if command == 'G21':
+                unit_scale = 1.
+                continue
+            if command == 'G90':
+                absolute_xyz = True
+                continue
+            if command == 'G91':
+                absolute_xyz = False
+                continue
+            if command == 'M82':
+                absolute_e = True
+                continue
+            if command == 'M83':
+                absolute_e = False
+                continue
+            if command == 'G92':
+                for axis, index in (('X', 0), ('Y', 1), ('Z', 2)):
+                    if axis in params:
+                        position[index] = params[axis] * unit_scale
+                if 'E' in params:
+                    e_position = params['E'] * unit_scale
+                continue
+            if command in ('G2', 'G02', 'G3', 'G03'):
+                raise ValueError(
+                    "Arc moves (G2/G3) are not yet supported when extracting "
+                    "G-code footprint paths (line %d)" % (line_number,))
+            if command not in ('G0', 'G00', 'G1', 'G01'):
+                continue
+
+            start = tuple(position)
+            end = list(position)
+            for axis, index in (('X', 0), ('Y', 1), ('Z', 2)):
+                if axis not in params:
+                    continue
+                value = params[axis] * unit_scale
+                end[index] = value if absolute_xyz else position[index] + value
+
+            extrusion_delta = 0.
+            if 'E' in params:
+                e_value = params['E'] * unit_scale
+                if absolute_e:
+                    extrusion_delta = e_value - e_position
+                    e_position = e_value
+                else:
+                    extrusion_delta = e_value
+                    e_position += e_value
+
+            moved_xy = (abs(end[0] - start[0]) > 1.e-9
+                        or abs(end[1] - start[1]) > 1.e-9)
+            if extrusion_delta > 1.e-9 and moved_xy:
+                paths.append({
+                    'start': start,
+                    'end': tuple(end),
+                    'line': line_number,
+                })
+            position = end
+        return paths
+
+    @staticmethod
+    def group_extrusion_paths(paths, tolerance=0.03):
+        """Group adjacent extrusion segments into per-layer contours."""
+        contours = []
+        current = None
+        for path in paths:
+            start = path['start']
+            end = path['end']
+            layer_z = end[2]
+            connected = False
+            if current is not None and abs(current['layer_z'] - layer_z) <= tolerance:
+                prev = current['points'][-1]
+                connected = math.hypot(start[0] - prev[0], start[1] - prev[1]) <= tolerance
+            if not connected:
+                if current is not None:
+                    contours.append(current)
+                current = {
+                    'layer_z': layer_z,
+                    'points': [start, end],
+                    'source_lines': [path['line']],
+                }
+            else:
+                if math.hypot(end[0] - current['points'][-1][0],
+                              end[1] - current['points'][-1][1]) > 1.e-9:
+                    current['points'].append(end)
+                current['source_lines'].append(path['line'])
+        if current is not None:
+            contours.append(current)
+        layer_contour_counts = {}
+        for contour in contours:
+            layer_key = round(contour['layer_z'], 2)
+            contour['contour_index'] = layer_contour_counts.get(layer_key, 0)
+            layer_contour_counts[layer_key] = contour['contour_index'] + 1
+        return contours
+
+    @staticmethod
+    def transform_calibration_point(point, target):
+        """Apply the same XY rotation and translation as transform_line()."""
+        source_x, source_y = 102.5, 102.5
+        target_x, target_y, angle_deg = target
+        angle = math.radians(angle_deg)
+        dx, dy = point[0] - source_x, point[1] - source_y
+        x = target_x + dx * math.cos(angle) - dy * math.sin(angle)
+        y = target_y + dx * math.sin(angle) + dy * math.cos(angle)
+        return x, y, point[2]
 
     # Timer to check calib_wait_flag and start printing
     def _check_calib_and_start_print(self, eventtime):

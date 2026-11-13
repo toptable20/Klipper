@@ -208,6 +208,10 @@ class BedCenterCalibration:
             return []
         return self._apply_manual_offset(selected)
 
+    def get_selected_target_ids_for_print(self):
+        return [target["id"] for target in self.detected_targets
+                if target["id"] in self.selected_target_ids]
+
     def load_calibration_data(self, file_path):
         with open(file_path, 'r') as f:
             data = json.load(f)

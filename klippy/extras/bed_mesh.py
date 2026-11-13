@@ -34,6 +34,130 @@ def constrain(val, min_val, max_val):
 def lerp(t, v0, v1):
     return (1. - t) * v0 + t * v1
 
+def convex_hull(points):
+    pts = sorted(set((float(p[0]), float(p[1])) for p in points))
+    if len(pts) <= 2:
+        return pts
+    def cross(o, a, b):
+        return ((a[0] - o[0]) * (b[1] - o[1]) -
+                (a[1] - o[1]) * (b[0] - o[0]))
+    lower = []
+    for point in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], point) <= 1.e-10:
+            lower.pop()
+        lower.append(point)
+    upper = []
+    for point in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], point) <= 1.e-10:
+            upper.pop()
+        upper.append(point)
+    return lower[:-1] + upper[:-1]
+
+def point_in_polygon(point, polygon, tolerance=1.e-7):
+    x, y = point
+    inside = False
+    for idx, first in enumerate(polygon):
+        second = polygon[(idx + 1) % len(polygon)]
+        dx, dy = second[0] - first[0], second[1] - first[1]
+        cross = (x - first[0]) * dy - (y - first[1]) * dx
+        dot = (x - first[0]) * dx + (y - first[1]) * dy
+        if (abs(cross) <= tolerance and
+                -tolerance <= dot <= dx * dx + dy * dy + tolerance):
+            return True
+        if (first[1] > y) != (second[1] > y):
+            intersect_x = (second[0] - first[0]) * (y - first[1]) \
+                          / (second[1] - first[1]) + first[0]
+            if x < intersect_x:
+                inside = not inside
+    return inside
+
+def generate_footprint_regions(contours, spacing):
+    """Create per-target convex regions and staggered probe points."""
+    contour_points = collections.defaultdict(list)
+    for contour in contours:
+        target_id = contour.get('target_id', contour['target_index'] + 1)
+        key = (target_id, contour['contour_index'])
+        contour_points[key].extend(
+            (point[0], point[1]) for point in contour['points'])
+    regions = []
+    points = []
+    point_targets = []
+    seen = set()
+    for target_id, contour_index in sorted(contour_points):
+        polygon = convex_hull(contour_points[(target_id, contour_index)])
+        if len(polygon) < 3:
+            continue
+        regions.append({'target_id': target_id,
+                        'contour_index': contour_index,
+                        'polygon': polygon})
+        min_x = min(p[0] for p in polygon)
+        max_x = max(p[0] for p in polygon)
+        min_y = min(p[1] for p in polygon)
+        max_y = max(p[1] for p in polygon)
+        row = 0
+        y = min_y + spacing * .5
+        while y < max_y:
+            offset = (spacing * .5) if row % 2 else 0.
+            x = min_x + spacing * .5 + offset
+            while x < max_x:
+                point = (x, y)
+                if point_in_polygon(point, polygon):
+                    key = (round(x, 4), round(y, 4))
+                    target_key = (target_id, key)
+                    if target_key not in seen:
+                        points.append(point)
+                        point_targets.append(target_id)
+                        seen.add(target_key)
+                x += spacing
+            y += spacing * math.sqrt(3.) / 2.
+            row += 1
+        edges = []
+        perimeter = 0.
+        for edge_index, (x0, y0) in enumerate(polygon):
+            x1, y1 = polygon[(edge_index + 1) % len(polygon)]
+            edge_length = math.hypot(x1 - x0, y1 - y0)
+            edges.append((x0, y0, x1, y1, edge_length))
+            perimeter += edge_length
+        boundary_count = max(3, int(math.ceil(perimeter / spacing)))
+        for sample_index in range(boundary_count):
+            distance = perimeter * sample_index / float(boundary_count)
+            for edge_index, (x0, y0, x1, y1, edge_length) in enumerate(edges):
+                if distance <= edge_length or edge_index == len(edges) - 1:
+                    fraction = min(1., distance / max(edge_length, 1.e-9))
+                    x = x0 + (x1 - x0) * fraction
+                    y = y0 + (y1 - y0) * fraction
+                    key = (round(x, 4), round(y, 4))
+                    target_key = (target_id, key)
+                    if target_key not in seen:
+                        points.append((x, y))
+                        point_targets.append(target_id)
+                        seen.add(target_key)
+                    break
+                distance -= edge_length
+        # Retain sharp contour corners even when they fall between samples.
+        for index, point in enumerate(polygon):
+            prev_point = polygon[index - 1]
+            next_point = polygon[(index + 1) % len(polygon)]
+            v1 = (prev_point[0] - point[0], prev_point[1] - point[1])
+            v2 = (next_point[0] - point[0], next_point[1] - point[1])
+            denom = math.hypot(*v1) * math.hypot(*v2)
+            if denom <= 1.e-9:
+                continue
+            cosine = ((v1[0] * v2[0] + v1[1] * v2[1]) / denom)
+            if cosine > math.cos(math.radians(150.)):
+                key = (round(point[0], 4), round(point[1], 4))
+                target_key = (target_id, key)
+                if target_key not in seen:
+                    points.append(point)
+                    point_targets.append(target_id)
+                    seen.add(target_key)
+    ordered = sorted(zip(points, point_targets),
+                     key=lambda item: (round(item[0][1], 3),
+                                       round(item[0][0], 3)))
+    points = [point for point, _ in ordered]
+    point_targets = [target_id for _, target_id in ordered]
+    return regions, points, point_targets
+
 # retreive commma separated pair from config
 def parse_config_pair(config, option, default, minval=None, maxval=None):
     pair = config.getintlist(option, (default, default))
@@ -121,6 +245,9 @@ class BedMesh:
         self.gcode.register_command(
             'BED_MESH_OFFSET', self.cmd_BED_MESH_OFFSET,
             desc=self.cmd_BED_MESH_OFFSET_help)
+        self.gcode.register_command(
+            'BED_MESH_SET_FOOTPRINT', self.cmd_BED_MESH_SET_FOOTPRINT,
+            desc="Activate a temporary footprint mesh by target ID")
         # Register dump webhooks
         webhooks = self.printer.lookup_object('webhooks')
         webhooks.register_endpoint(
@@ -274,6 +401,18 @@ class BedMesh:
     cmd_BED_MESH_CLEAR_help = "Clear the Mesh so no z-adjustment is made"
     def cmd_BED_MESH_CLEAR(self, gcmd):
         self.set_mesh(None)
+        self.bmc.footprint_meshes = {}
+    def cmd_BED_MESH_SET_FOOTPRINT(self, gcmd):
+        target_id = gcmd.get_int('TARGET', minval=1)
+        mesh = self.bmc.footprint_meshes.get(target_id)
+        if mesh is None:
+            raise gcmd.error(
+                "bed_mesh: no temporary footprint mesh for target ID %d"
+                % (target_id,))
+        self.set_mesh(mesh)
+        gcmd.respond_info(
+            "Activated temporary footprint mesh for target ID %d"
+            % (target_id,))
     cmd_BED_MESH_OFFSET_help = "Add X/Y offsets to the mesh lookup"
     def cmd_BED_MESH_OFFSET(self, gcmd):
         if self.z_mesh is not None:
@@ -365,6 +504,14 @@ class BedMeshCalibrate:
             desc=self.cmd_BED_MESH_CALIBRATE_help)
         self.custom_points = -1
         self.target_height = 0
+        self.footprint_spacing = config.getfloat(
+            'gcode_footprint_spacing', 5., minval=1.)
+        self.footprint_regions = []
+        self.footprint_mesh_active = False
+        self.footprint_meshes = {}
+        self.footprint_point_targets = []
+        self.footprint_contours = []
+        self.footprint_region_targets = []
         
         self.bed_center_calibration = self.printer.load_object(config, 'bed_center_calibration')
         self.print_stats = self.printer.load_object(config, 'print_stats')
@@ -584,6 +731,12 @@ class BedMeshCalibrate:
         return True
 
     def update_config(self, gcmd):
+        self.footprint_regions = []
+        self.footprint_mesh_active = False
+        self.footprint_meshes = {}
+        self.footprint_point_targets = []
+        self.footprint_region_targets = []
+        self.footprint_contours = []
         # reset default configuration
         self.radius = self.orig_config['radius']
         self.origin = self.orig_config['origin']
@@ -591,6 +744,16 @@ class BedMeshCalibrate:
         self.mesh_max = self.orig_config['mesh_max']
         for key in list(self.mesh_config.keys()):
             self.mesh_config[key] = self.orig_config[key]
+
+        if (self.print_stats.get_bed_center_calibration()
+                and self.bed_center_calibration.detect_type == 1):
+            virtual_sd = self.printer.lookup_object('virtual_sdcard', None)
+            self.footprint_contours = getattr(
+                virtual_sd, 'transformed_extrusion_contours', [])
+            if not self.footprint_contours:
+                raise gcmd.error(
+                    "No transformed extrusion paths are available for "
+                    "G-code footprint meshing")
 
         eventtime = self.printer.get_reactor().monotonic()
         if (self.print_stats.get_bed_center_calibration()
@@ -651,7 +814,8 @@ class BedMeshCalibrate:
             self.mesh_config['algo'] = gcmd.get('ALGORITHM').strip().lower()
             need_cfg_update = True
 
-        need_cfg_update |= self.set_adaptive_mesh(gcmd)
+        if not self.footprint_contours:
+            need_cfg_update |= self.set_adaptive_mesh(gcmd)
         probe_method = gcmd.get("METHOD", "automatic")
 
         if need_cfg_update:
@@ -668,6 +832,50 @@ class BedMeshCalibrate:
                 self.mesh_config, self.mesh_min, self.mesh_max,
                 self.radius, self.origin, probe_method
             )
+
+        if self.footprint_contours:
+            if probe_method not in ('automatic', 'manual'):
+                raise gcmd.error(
+                    "G-code footprint mesh supports METHOD=automatic "
+                    "or METHOD=manual")
+            regions, points, point_targets = generate_footprint_regions(
+                self.footprint_contours, self.footprint_spacing)
+            if len(points) < 3 or not regions:
+                raise gcmd.error(
+                    "Unable to create probe points from G-code footprint")
+            self.footprint_regions = [region['polygon'] for region in regions]
+            self.footprint_region_targets = [
+                region['target_id'] for region in regions]
+            usable_with_targets = [
+                (point, target_id)
+                for point, target_id in zip(points, point_targets)
+                if not any(within(point, min_c, max_c, tol=1.e-7)
+                           for min_c, max_c in self.probe_mgr.faulty_regions)]
+            usable_points = [point for point, _ in usable_with_targets]
+            self.footprint_point_targets = [
+                target_id for _, target_id in usable_with_targets]
+            if len(usable_points) < 3:
+                raise gcmd.error(
+                    "Too few G-code footprint points remain outside "
+                    "configured faulty regions")
+            for region in regions:
+                target_id = region['target_id']
+                polygon = region['polygon']
+                region_points = [
+                    point for point, point_target in usable_with_targets
+                    if point_target == target_id
+                    and point_in_polygon(point, polygon)]
+                if len(convex_hull(region_points)) < 3:
+                    raise gcmd.error(
+                        "Too few usable probe points in a G-code contour")
+            self.probe_mgr.set_custom_points(
+                usable_points, self.footprint_regions,
+                self.footprint_point_targets)
+            self.footprint_mesh_active = True
+            self._profile_name = None
+            logging.info(
+                "Using %d G-code footprint probe points in %d contour regions",
+                len(usable_points), len(self.footprint_regions))
     def set_horizontal_move_z(self, height):
         self.probe_mgr.set_horizontal_move_z(height)
     def dump_calibration(self, gcmd=None):
@@ -708,6 +916,52 @@ class BedMeshCalibrate:
             )
             z_offset = ref_pos[2]
         base_points = self.probe_mgr.get_base_points()
+        if self.probe_mgr.get_custom_points():
+            if len(base_points) != len(positions):
+                raise self.gcode.error(
+                    "bed_mesh: footprint probe result count mismatch "
+                    "(generated %d, probed %d)" %
+                    (len(base_points), len(positions)))
+            samples = [(point[0], point[1], result[2] - z_offset)
+                       for point, result in zip(base_points, positions)]
+            try:
+                target_ids = self.probe_mgr.get_custom_point_targets()
+                zero_ref_pos = None
+                if self.probe_mgr.get_zero_ref_mode() == ZrefMode.IN_MESH:
+                    zero_ref_pos = self.probe_mgr.get_zero_ref_pos()
+                target_meshes = {}
+                for target_id in sorted(set(target_ids)):
+                    target_samples = [
+                        sample for sample, sample_target
+                        in zip(samples, target_ids)
+                        if sample_target == target_id]
+                    target_regions = [
+                        region for region, region_target
+                        in zip(self.footprint_regions,
+                               self.footprint_region_targets)
+                        if region_target == target_id]
+                    if len(target_samples) < 3 or not target_regions:
+                        raise BedMeshError(
+                            "bed_mesh: insufficient samples for target ID %d"
+                            % (target_id,))
+                    target_mesh = ScatteredZMesh(
+                        target_samples, target_regions,
+                        name="footprint-%d" % (target_id,))
+                    if zero_ref_pos is not None and any(
+                            point_in_polygon(zero_ref_pos, region)
+                            for region in target_regions):
+                        target_mesh.set_zero_reference(*zero_ref_pos)
+                    target_meshes[target_id] = target_mesh
+            except BedMeshError as e:
+                raise self.gcode.error(str(e))
+            self.footprint_meshes = target_meshes
+            first_target = min(target_meshes)
+            self.bedmesh.set_mesh(target_meshes[first_target])
+            self.gcode.respond_info(
+                "G-code footprint meshes complete: %d measured points for %d targets; active target ID %d"
+                % (len(samples), len(target_meshes), first_target))
+            return
+
         params = dict(self.mesh_config)
         params['min_x'] = min(base_points, key=lambda p: p[0])[0]
         params['max_x'] = max(base_points, key=lambda p: p[0])[0]
@@ -936,6 +1190,10 @@ class ProbeManager:
         self, mesh_config, mesh_min, mesh_max, radius, origin,
         probe_method="automatic"
     ):
+        self.custom_points = False
+        self.custom_regions = []
+        self.custom_point_targets = []
+        self.custom_reference_probe = False
         x_cnt = mesh_config['x_count']
         y_cnt = mesh_config['y_count']
         min_x, min_y = mesh_min
@@ -996,6 +1254,42 @@ class ProbeManager:
         min_pt, max_pt = (min_x, min_y), (max_x, max_y)
         self._process_faulty_regions(min_pt, max_pt, radius)
         self.probe_helper.update_probe_points(self.get_std_path(), 3)
+
+    def set_custom_points(self, points, regions, point_targets):
+        self.base_points = list(points)
+        self.substitutes.clear()
+        self.custom_points = True
+        self.custom_regions = [list(region) for region in regions]
+        self.custom_point_targets = list(point_targets)
+        helper_points = list(self.base_points)
+        self.custom_reference_probe = False
+        if self.zero_ref_pos is None:
+            self.zref_mode = ZrefMode.DISABLED
+        elif any(point_in_polygon(self.zero_ref_pos, region)
+                 for region in self.custom_regions):
+            self.zref_mode = ZrefMode.IN_MESH
+        else:
+            for min_c, max_c in self.faulty_regions:
+                if within(self.zero_ref_pos, min_c, max_c):
+                    raise BedMeshError(
+                        "bed_mesh: Cannot probe zero reference position "
+                        "inside a configured faulty region")
+            self.zref_mode = ZrefMode.PROBE
+            self.custom_reference_probe = True
+            helper_points.append(self.zero_ref_pos)
+        self.probe_helper.update_probe_points(helper_points, 3)
+
+    def get_custom_points(self):
+        return self.custom_points
+
+    def get_custom_regions(self):
+        return self.custom_regions
+
+    def get_custom_point_targets(self):
+        return self.custom_point_targets
+
+    def has_custom_reference_probe(self):
+        return self.custom_reference_probe
 
     def _process_faulty_regions(self, min_pt, max_pt, radius):
         if not self.faulty_regions:
@@ -1366,6 +1660,206 @@ class MoveSplitter:
             return None
 
 
+def _triangle_orientation(a, b, c):
+    return ((b[0] - a[0]) * (c[1] - a[1]) -
+            (b[1] - a[1]) * (c[0] - a[0]))
+
+def _circumcircle_contains(point, a, b, c):
+    ax, ay = a[0] - point[0], a[1] - point[1]
+    bx, by = b[0] - point[0], b[1] - point[1]
+    cx, cy = c[0] - point[0], c[1] - point[1]
+    determinant = ((ax*ax + ay*ay) * (bx*cy - by*cx)
+                   - (bx*bx + by*by) * (ax*cy - ay*cx)
+                   + (cx*cx + cy*cy) * (ax*by - ay*bx))
+    if _triangle_orientation(a, b, c) < 0.:
+        determinant = -determinant
+    return determinant >= -1.e-9
+
+def delaunay_triangulate(points):
+    """Return triangle index triples for a small set of XY points."""
+    count = len(points)
+    if count < 3:
+        return []
+    min_x = min(p[0] for p in points)
+    max_x = max(p[0] for p in points)
+    min_y = min(p[1] for p in points)
+    max_y = max(p[1] for p in points)
+    span = max(max_x - min_x, max_y - min_y)
+    if span <= 1.e-9:
+        return []
+    center_x = (min_x + max_x) * .5
+    center_y = (min_y + max_y) * .5
+    vertices = list(points) + [
+        (center_x - 20. * span, center_y - span),
+        (center_x + 20. * span, center_y - span),
+        (center_x, center_y + 20. * span)]
+    triangles = [(count, count + 1, count + 2)]
+    for point_index in range(count):
+        point = vertices[point_index]
+        bad = [triangle for triangle in triangles
+               if _circumcircle_contains(
+                   point, vertices[triangle[0]], vertices[triangle[1]],
+                   vertices[triangle[2]])]
+        if not bad:
+            continue
+        edges = {}
+        for triangle in bad:
+            for edge in ((triangle[0], triangle[1]),
+                         (triangle[1], triangle[2]),
+                         (triangle[2], triangle[0])):
+                key = tuple(sorted(edge))
+                edges[key] = edges.get(key, 0) + 1
+        triangles = [triangle for triangle in triangles
+                     if triangle not in bad]
+        for edge, edge_count in edges.items():
+            if edge_count != 1:
+                continue
+            a, b = edge
+            if _triangle_orientation(vertices[a], vertices[b], point) < 0.:
+                a, b = b, a
+            if abs(_triangle_orientation(vertices[a], vertices[b], point)) > 1.e-10:
+                triangles.append((a, b, point_index))
+    return [triangle for triangle in triangles
+            if all(index < count for index in triangle)]
+
+def barycentric_interpolate(point, a, b, c, tolerance=1.e-7):
+    denominator = _triangle_orientation(a[:2], b[:2], c[:2])
+    if abs(denominator) <= 1.e-12:
+        return None
+    wa = _triangle_orientation(point, b[:2], c[:2]) / denominator
+    wb = _triangle_orientation(a[:2], point, c[:2]) / denominator
+    wc = 1. - wa - wb
+    if min(wa, wb, wc) < -tolerance:
+        return None
+    return wa * a[2] + wb * b[2] + wc * c[2]
+
+class ScatteredZMesh:
+    """Piecewise-planar Z surface from irregularly sampled probe points."""
+    is_scattered = True
+    def __init__(self, samples, regions, name=None):
+        if len(samples) < 3:
+            raise BedMeshError("bed_mesh: at least three footprint samples are required")
+        self.samples = [tuple(point) for point in samples]
+        self.profile_name = name or "gcode-footprint"
+        self.mesh_offsets = [0., 0.]
+        self.regions = []
+        for polygon in regions:
+            indices = [i for i, sample in enumerate(self.samples)
+                       if point_in_polygon(sample[:2], polygon)]
+            if len(indices) < 3:
+                continue
+            local_points = [self.samples[i] for i in indices]
+            triangles = delaunay_triangulate(local_points)
+            if triangles:
+                triangle_data = []
+                for triangle in triangles:
+                    a, b, c = [local_points[index] for index in triangle]
+                    triangle_data.append((
+                        a, b, c,
+                        min(a[0], b[0], c[0]), max(a[0], b[0], c[0]),
+                        min(a[1], b[1], c[1]), max(a[1], b[1], c[1])))
+                bounds = (min(point[0] for point in polygon),
+                          max(point[0] for point in polygon),
+                          min(point[1] for point in polygon),
+                          max(point[1] for point in polygon))
+                self.regions.append((polygon, bounds, triangle_data))
+        if not self.regions:
+            raise BedMeshError("bed_mesh: unable to triangulate footprint samples")
+        self.mesh_x_min = min(p[0] for p in self.samples)
+        self.mesh_x_max = max(p[0] for p in self.samples)
+        self.mesh_y_min = min(p[1] for p in self.samples)
+        self.mesh_y_max = max(p[1] for p in self.samples)
+        self.mesh_params = collections.OrderedDict([
+            ('min_x', self.mesh_x_min), ('max_x', self.mesh_x_max),
+            ('min_y', self.mesh_y_min), ('max_y', self.mesh_y_max),
+            ('x_count', max(3, min(25, int((self.mesh_x_max - self.mesh_x_min) / 5.) + 1))),
+            ('y_count', max(3, min(25, int((self.mesh_y_max - self.mesh_y_min) / 5.) + 1))),
+            ('mesh_x_pps', 0), ('mesh_y_pps', 0),
+            ('algo', 'delaunay'), ('tension', 0.)])
+        self._refresh_display_matrix()
+
+    def _interpolate_region(self, point, region):
+        polygon, bounds, triangles = region
+        if (point[0] < bounds[0] - .01 or point[0] > bounds[1] + .01
+                or point[1] < bounds[2] - .01 or point[1] > bounds[3] + .01):
+            return None
+        if not point_in_polygon(point, polygon, tolerance=.01):
+            return None
+        for a, b, c, min_x, max_x, min_y, max_y in triangles:
+            if (point[0] < min_x - .01 or point[0] > max_x + .01
+                    or point[1] < min_y - .01 or point[1] > max_y + .01):
+                continue
+            value = barycentric_interpolate(point, a, b, c)
+            if value is not None:
+                return value
+        return None
+
+    def calc_z(self, x, y):
+        point = (x + self.mesh_offsets[0], y + self.mesh_offsets[1])
+        for region in self.regions:
+            value = self._interpolate_region(point, region)
+            if value is not None:
+                return value
+        nearest = min(self.samples,
+                      key=lambda sample: ((sample[0] - point[0]) ** 2
+                                          + (sample[1] - point[1]) ** 2))
+        return nearest[2]
+
+    def _refresh_display_matrix(self):
+        x_count = self.mesh_params['x_count']
+        y_count = self.mesh_params['y_count']
+        self.probed_matrix = []
+        for row in range(y_count):
+            y = self.mesh_y_min + (self.mesh_y_max - self.mesh_y_min) \
+                * row / (y_count - 1)
+            values = []
+            for col in range(x_count):
+                x = self.mesh_x_min + (self.mesh_x_max - self.mesh_x_min) \
+                    * col / (x_count - 1)
+                values.append(self.calc_z(x, y))
+            self.probed_matrix.append(values)
+        self.mesh_matrix = [list(row) for row in self.probed_matrix]
+
+    def set_zero_reference(self, xpos, ypos):
+        offset = self.calc_z(xpos, ypos)
+        self.samples = [(x, y, z - offset) for x, y, z in self.samples]
+        self._refresh_display_matrix()
+
+    def set_mesh_offsets(self, offsets):
+        for index, value in enumerate(offsets):
+            if value is not None:
+                self.mesh_offsets[index] = value
+
+    def get_mesh_params(self):
+        return self.mesh_params
+
+    def get_profile_name(self):
+        return self.profile_name
+
+    def get_probed_matrix(self):
+        return [[round(z, 6) for z in row] for row in self.probed_matrix]
+
+    def get_mesh_matrix(self):
+        return [[round(z, 6) for z in row] for row in self.mesh_matrix]
+
+    def get_z_range(self):
+        values = [point[2] for point in self.samples]
+        return min(values), max(values)
+
+    def get_z_average(self):
+        return round(sum(point[2] for point in self.samples) / len(self.samples), 2)
+
+    def print_probed_matrix(self, print_func):
+        print_func("G-code footprint probe samples:")
+        for index, (x, y, z) in enumerate(self.samples):
+            print_func("%d: X=%.3f Y=%.3f Z=%.6f" % (index, x, y, z))
+
+    def print_mesh(self, print_func, move_z=None):
+        print_func("G-code footprint interpolated mesh (%d x %d)" % (
+            self.mesh_params['x_count'], self.mesh_params['y_count']))
+        for row in reversed(self.get_mesh_matrix()):
+            print_func("  " + " ".join("%.6f" % z for z in row))
+
 class ZMesh:
     def __init__(self, params, name):
         self.profile_name = name or "adaptive-%X" % (id(self),)
@@ -1729,6 +2223,11 @@ class ProfileManager:
             self.gcode.respond_info(
                 "Unable to save to profile [%s], the bed has not been probed"
                 % (prof_name))
+            return
+        if getattr(z_mesh, 'is_scattered', False):
+            self.gcode.respond_info(
+                "G-code footprint meshes are temporary and cannot be saved "
+                "as regular bed mesh profiles")
             return
         probed_matrix = z_mesh.get_probed_matrix()
         mesh_params = z_mesh.get_mesh_params()
