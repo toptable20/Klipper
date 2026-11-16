@@ -71,86 +71,104 @@ def point_in_polygon(point, polygon, tolerance=1.e-7):
                 inside = not inside
     return inside
 
-def generate_footprint_regions(contours, spacing):
-    """Create per-target convex regions and staggered probe points."""
-    contour_points = collections.defaultdict(list)
+def polygon_area(polygon):
+    return .5 * sum(
+        first[0] * polygon[(index + 1) % len(polygon)][1]
+        - polygon[(index + 1) % len(polygon)][0] * first[1]
+        for index, first in enumerate(polygon))
+
+def inset_convex_polygon(polygon, inset):
+    """Return the polygon offset inward by inset millimeters."""
+    if inset <= 0.:
+        return list(polygon)
+    points = list(polygon)
+    if polygon_area(points) < 0.:
+        points.reverse()
+    shifted_edges = []
+    for index, start in enumerate(points):
+        end = points[(index + 1) % len(points)]
+        dx, dy = end[0] - start[0], end[1] - start[1]
+        length = math.hypot(dx, dy)
+        if length <= 1.e-9:
+            return []
+        normal = (-dy / length * inset, dx / length * inset)
+        shifted_edges.append(((start[0] + normal[0],
+                               start[1] + normal[1]), (dx, dy)))
+    inset_points = []
+    for index in range(len(points)):
+        p, r = shifted_edges[index - 1]
+        q, s = shifted_edges[index]
+        denominator = r[0] * s[1] - r[1] * s[0]
+        if abs(denominator) <= 1.e-10:
+            return []
+        qp = (q[0] - p[0], q[1] - p[1])
+        t = (qp[0] * s[1] - qp[1] * s[0]) / denominator
+        vertex = (p[0] + t * r[0], p[1] + t * r[1])
+        if not point_in_polygon(vertex, points, tolerance=1.e-5):
+            return []
+        inset_points.append(vertex)
+    if abs(polygon_area(inset_points)) <= 1.e-8:
+        return []
+    return inset_points
+
+def select_three_spread_points(polygon, min_area=1.):
+    """Select a widely spread, non-collinear triple from polygon vertices."""
+    candidates = list(polygon)
+    if len(candidates) > 96:
+        candidates = [candidates[round(i * (len(candidates) - 1) / 95.)]
+                      for i in range(96)]
+    if len(candidates) < 3:
+        return None
+    best_points = None
+    best_score = None
+    for first in range(len(candidates) - 2):
+        a = candidates[first]
+        for second in range(first + 1, len(candidates) - 1):
+            b = candidates[second]
+            ab = (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2
+            for third in range(second + 1, len(candidates)):
+                c = candidates[third]
+                area = abs(polygon_area([a, b, c]))
+                if area < min_area:
+                    continue
+                bc = (b[0] - c[0]) ** 2 + (b[1] - c[1]) ** 2
+                ca = (c[0] - a[0]) ** 2 + (c[1] - a[1]) ** 2
+                score = (min(ab, bc, ca), area)
+                if best_score is None or score > best_score:
+                    best_score = score
+                    best_points = [a, b, c]
+    return best_points
+
+def generate_footprint_regions(contours, inset_distance):
+    """Create one inward-offset region and three probe points per target."""
+    target_points = collections.defaultdict(list)
     for contour in contours:
         target_id = contour.get('target_id', contour['target_index'] + 1)
-        key = (target_id, contour['contour_index'])
-        contour_points[key].extend(
+        target_points[target_id].extend(
             (point[0], point[1]) for point in contour['points'])
     regions = []
     points = []
     point_targets = []
-    seen = set()
-    for target_id, contour_index in sorted(contour_points):
-        polygon = convex_hull(contour_points[(target_id, contour_index)])
+    for target_id in sorted(target_points):
+        polygon = convex_hull(target_points[target_id])
         if len(polygon) < 3:
             continue
-        regions.append({'target_id': target_id,
-                        'contour_index': contour_index,
-                        'polygon': polygon})
-        min_x = min(p[0] for p in polygon)
-        max_x = max(p[0] for p in polygon)
-        min_y = min(p[1] for p in polygon)
-        max_y = max(p[1] for p in polygon)
-        row = 0
-        y = min_y + spacing * .5
-        while y < max_y:
-            offset = (spacing * .5) if row % 2 else 0.
-            x = min_x + spacing * .5 + offset
-            while x < max_x:
-                point = (x, y)
-                if point_in_polygon(point, polygon):
-                    key = (round(x, 4), round(y, 4))
-                    target_key = (target_id, key)
-                    if target_key not in seen:
-                        points.append(point)
-                        point_targets.append(target_id)
-                        seen.add(target_key)
-                x += spacing
-            y += spacing * math.sqrt(3.) / 2.
-            row += 1
-        edges = []
-        perimeter = 0.
-        for edge_index, (x0, y0) in enumerate(polygon):
-            x1, y1 = polygon[(edge_index + 1) % len(polygon)]
-            edge_length = math.hypot(x1 - x0, y1 - y0)
-            edges.append((x0, y0, x1, y1, edge_length))
-            perimeter += edge_length
-        boundary_count = max(3, int(math.ceil(perimeter / spacing)))
-        for sample_index in range(boundary_count):
-            distance = perimeter * sample_index / float(boundary_count)
-            for edge_index, (x0, y0, x1, y1, edge_length) in enumerate(edges):
-                if distance <= edge_length or edge_index == len(edges) - 1:
-                    fraction = min(1., distance / max(edge_length, 1.e-9))
-                    x = x0 + (x1 - x0) * fraction
-                    y = y0 + (y1 - y0) * fraction
-                    key = (round(x, 4), round(y, 4))
-                    target_key = (target_id, key)
-                    if target_key not in seen:
-                        points.append((x, y))
-                        point_targets.append(target_id)
-                        seen.add(target_key)
-                    break
-                distance -= edge_length
-        # Retain sharp contour corners even when they fall between samples.
-        for index, point in enumerate(polygon):
-            prev_point = polygon[index - 1]
-            next_point = polygon[(index + 1) % len(polygon)]
-            v1 = (prev_point[0] - point[0], prev_point[1] - point[1])
-            v2 = (next_point[0] - point[0], next_point[1] - point[1])
-            denom = math.hypot(*v1) * math.hypot(*v2)
-            if denom <= 1.e-9:
-                continue
-            cosine = ((v1[0] * v2[0] + v1[1] * v2[1]) / denom)
-            if cosine > math.cos(math.radians(150.)):
-                key = (round(point[0], 4), round(point[1], 4))
-                target_key = (target_id, key)
-                if target_key not in seen:
-                    points.append(point)
-                    point_targets.append(target_id)
-                    seen.add(target_key)
+        selected = None
+        actual_inset = inset_distance
+        while actual_inset >= -1.e-9:
+            inset_polygon = inset_convex_polygon(polygon, actual_inset)
+            selected = select_three_spread_points(inset_polygon)
+            if selected is not None:
+                break
+            actual_inset = round(actual_inset - .5, 4)
+        if selected is None:
+            raise BedMeshError(
+                "bed_mesh: target ID %d is too small or narrow for three "
+                "stable footprint probe points" % (target_id,))
+        regions.append({'target_id': target_id, 'polygon': polygon,
+                        'probe_inset': max(0., actual_inset)})
+        points.extend(selected)
+        point_targets.extend([target_id] * 3)
     ordered = sorted(zip(points, point_targets),
                      key=lambda item: (round(item[0][1], 3),
                                        round(item[0][0], 3)))
@@ -504,8 +522,10 @@ class BedMeshCalibrate:
             desc=self.cmd_BED_MESH_CALIBRATE_help)
         self.custom_points = -1
         self.target_height = 0
-        self.footprint_spacing = config.getfloat(
-            'gcode_footprint_spacing', 5., minval=1.)
+        # Consume the legacy option so existing configs remain compatible.
+        config.getfloat('gcode_footprint_spacing', 5.)
+        self.footprint_inset = config.getfloat(
+            'gcode_footprint_inset', 10., minval=0.)
         self.footprint_regions = []
         self.footprint_mesh_active = False
         self.footprint_meshes = {}
@@ -838,8 +858,11 @@ class BedMeshCalibrate:
                 raise gcmd.error(
                     "G-code footprint mesh supports METHOD=automatic "
                     "or METHOD=manual")
-            regions, points, point_targets = generate_footprint_regions(
-                self.footprint_contours, self.footprint_spacing)
+            try:
+                regions, points, point_targets = generate_footprint_regions(
+                    self.footprint_contours, self.footprint_inset)
+            except BedMeshError as e:
+                raise gcmd.error(str(e))
             if len(points) < 3 or not regions:
                 raise gcmd.error(
                     "Unable to create probe points from G-code footprint")
@@ -873,9 +896,20 @@ class BedMeshCalibrate:
                 self.footprint_point_targets)
             self.footprint_mesh_active = True
             self._profile_name = None
+            for region in regions:
+                target_points = [
+                    point for point, target_id in zip(
+                        usable_points, self.footprint_point_targets)
+                    if target_id == region['target_id']]
+                logging.info(
+                    "G-code footprint target ID %d: points=%s, inset %.1fmm",
+                    region['target_id'],
+                    ", ".join("(%.2f, %.2f)" % point
+                              for point in target_points),
+                    region['probe_inset'])
             logging.info(
-                "Using %d G-code footprint probe points in %d contour regions",
-                len(usable_points), len(self.footprint_regions))
+                "Using %d G-code footprint probe points for %d targets",
+                len(usable_points), len(set(self.footprint_point_targets)))
     def set_horizontal_move_z(self, height):
         self.probe_mgr.set_horizontal_move_z(height)
     def dump_calibration(self, gcmd=None):
@@ -1722,14 +1756,15 @@ def delaunay_triangulate(points):
     return [triangle for triangle in triangles
             if all(index < count for index in triangle)]
 
-def barycentric_interpolate(point, a, b, c, tolerance=1.e-7):
+def barycentric_interpolate(point, a, b, c, tolerance=1.e-7,
+                            extrapolate=False):
     denominator = _triangle_orientation(a[:2], b[:2], c[:2])
     if abs(denominator) <= 1.e-12:
         return None
     wa = _triangle_orientation(point, b[:2], c[:2]) / denominator
     wb = _triangle_orientation(a[:2], point, c[:2]) / denominator
     wc = 1. - wa - wb
-    if min(wa, wb, wc) < -tolerance:
+    if not extrapolate and min(wa, wb, wc) < -tolerance:
         return None
     return wa * a[2] + wb * b[2] + wc * c[2]
 
@@ -1786,10 +1821,13 @@ class ScatteredZMesh:
         if not point_in_polygon(point, polygon, tolerance=.01):
             return None
         for a, b, c, min_x, max_x, min_y, max_y in triangles:
-            if (point[0] < min_x - .01 or point[0] > max_x + .01
-                    or point[1] < min_y - .01 or point[1] > max_y + .01):
+            if (len(self.samples) != 3
+                    and (point[0] < min_x - .01 or point[0] > max_x + .01
+                         or point[1] < min_y - .01
+                         or point[1] > max_y + .01)):
                 continue
-            value = barycentric_interpolate(point, a, b, c)
+            value = barycentric_interpolate(
+                point, a, b, c, extrapolate=(len(self.samples) == 3))
             if value is not None:
                 return value
         return None
