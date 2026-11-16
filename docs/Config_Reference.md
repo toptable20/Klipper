@@ -1165,6 +1165,16 @@ Visual Examples:
 #adaptive_margin:
 #   An optional margin (in mm) to be added around the bed area used by
 #   the defined print objects when generating an adaptive mesh.
+#gcode_footprint_spacing: 5.0
+#   Legacy setting retained for compatibility. Unstructured footprint meshes
+#   use three probe points per target; this option no longer changes that count.
+#gcode_footprint_inset: 10.0
+#   Distance (in mm) to move the three probe points inward from the transformed
+#   G-code footprint boundary. If the target is too small, the distance is
+#   reduced automatically until a stable triangle can be formed. Default is 10.
+#   The three samples define a planar correction across each target footprint.
+#   Measurements are kept in temporary meshes by target ID, and generated
+#   print G-code switches meshes with BED_MESH_SET_FOOTPRINT.
 #scan_overshoot:
 #  The maximum amount of travel (in mm) available outside of the mesh.
 #  For rectangular beds this applies to travel on the X axis, and for round beds

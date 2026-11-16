@@ -17,9 +17,9 @@ class BedCenterCalibration:
         self.camera_height = 720
 
         # roi ratios
-        x_p, y_p, w_p, h_p = 0.13, 0.30, 0.34, 0.61
+        x_p, y_p, w_p, h_p = 0.28, 0.25, 0.28, 0.51
 
-        # ROI_RATIO = (0.25, 0.32, 0.30, 0.52)
+        # ROI_RATIO = (0.28, 0.25, 0.28, 0.51)
 
         # CROP_WIDTH = 375
         # CROP_HEIGHT = 375
@@ -208,6 +208,10 @@ class BedCenterCalibration:
         if not selected:
             return []
         return self._apply_manual_offset(selected)
+
+    def get_selected_target_ids_for_print(self):
+        return [target["id"] for target in self.detected_targets
+                if target["id"] in self.selected_target_ids]
 
     def load_calibration_data(self, file_path):
         with open(file_path, 'r') as f:
