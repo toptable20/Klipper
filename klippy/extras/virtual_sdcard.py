@@ -639,7 +639,8 @@ class VirtualSD:
         return re.sub(r"([XYIJ])([-+]?\d*\.?\d+)",
                       lambda m: f"{m.group(1)}{replacements[m.group(1)]:.3f}", line)
     
-    def _abort_calibration_print(self, error_message):
+    def _abort_calibration_print(self, error_message, restore_position=True,
+                                 detection_error=False):
         if self.work_timer is not None:
             try:
                 self.reactor.unregister_timer(self.work_timer)
@@ -652,15 +653,33 @@ class VirtualSD:
         self.file_position = self.file_size = 0
         self.calib_wait_flag = False
         self.calib_done_flag = False
-        self.print_stats.note_error(error_message)
-        self.gcode.respond_raw("!! Error: %s" % (error_message,))
-        # This may be called from SDCARD_PRINT_FILE while the G-code mutex is
-        # held. Queue the recovery moves so run_script() can acquire it after
-        # the current command returns.
-        self.reactor.register_callback(
-            self._restore_after_calibration_failure)
+        self.must_pause_work = False
+        self.cmd_from_sd = False
+        if detection_error:
+            self.print_stats.note_calibration_error(error_message)
+        else:
+            self.print_stats.note_error(error_message)
+        if restore_position:
+            # This may be called from SDCARD_PRINT_FILE while the G-Code
+            # mutex is held. Queue recovery moves until the command returns.
+            self.reactor.register_callback(
+                self._restore_after_calibration_failure)
+        else:
+            # Run error handling after SDCARD_PRINT_FILE releases the
+            # G-Code mutex, so heater shutdown macros can execute normally.
+            self.reactor.register_callback(self._run_calibration_on_error)
+
+    def _run_calibration_on_error(self, eventtime):
+        try:
+            self.gcode.run_script(self.on_error_gcode.render())
+        except Exception:
+            logging.exception("virtual_sdcard calibration on_error")
 
     def _restore_after_calibration_failure(self, eventtime):
+        try:
+            self.gcode.run_script(self.on_error_gcode.render())
+        except Exception:
+            logging.exception("virtual_sdcard calibration on_error")
         try:
             self.gcode.run_script("G1 X-100 Y205 Z10 F3000\nG91\nG1 E50\nG90")
         except Exception:
@@ -678,7 +697,16 @@ class VirtualSD:
             logging.info("Bed center calibration required before print start")
 
             if not use_selection:
-                self.gcode._process_commands("G28\nG91\nG1 E-50\nG90\nG1 X-25 Y100 Z50 F30000\n".split("\n"), need_ack=True)
+                try:
+                    self.gcode._process_commands(
+                        "G28\nG91\nG1 E-50\nG90\n"
+                        "G1 X-25 Y100 Z50 F30000\n".split("\n"),
+                        need_ack=False)
+                except self.gcode.error as e:
+                    self._abort_calibration_print(
+                        "Print-start homing/move failed: %s" % (e,),
+                        restore_position=False)
+                    return
                 if self.gcode.get_mutex():
                     logging.info("waiting for gcode mutex to release for bed center calibration2")
                     self.reactor.pause(self.reactor.monotonic() + 8.0)
@@ -697,7 +725,9 @@ class VirtualSD:
                 if not isinstance(coords, list) or not coords:
                     error_message = (coords if isinstance(coords, str)
                                      else "No targets detected")
-                    self._abort_calibration_print(error_message)
+                    self._abort_calibration_print(
+                        error_message, restore_position=False,
+                        detection_error=True)
                     return
                 self.print_stats.note_camcalib_ready()
                 self.calib_wait_flag = False
@@ -1074,9 +1104,11 @@ class VirtualSD:
             self.reactor.unregister_timer(self.work_timer)
             try:
                 self.current_file.seek(self.file_position)
-            except:
+            except Exception as e:
                 logging.exception("virtual_sdcard seek")
-                self.work_timer = None
+                self._abort_calibration_print(
+                    "Unable to seek calibrated G-code: %s" % (e,),
+                    restore_position=False)
                 return self.reactor.NEVER
             
             self.work_timer = self.reactor.register_timer(
@@ -1093,14 +1125,45 @@ class VirtualSD:
 
     # Background work timer
     def work_handler(self, eventtime):
+        try:
+            return self._work_handler(eventtime)
+        except Exception as e:
+            logging.exception("virtual_sdcard work handler")
+            self._abort_sd_print("SD print handler failed: %s" % (e,))
+            return self.reactor.NEVER
+
+    def _abort_sd_print(self, error_message):
+        if self.work_timer is not None:
+            try:
+                self.reactor.unregister_timer(self.work_timer)
+            except ValueError:
+                pass
+            self.work_timer = None
+        if self.current_file is not None:
+            try:
+                self.current_file.close()
+            except Exception:
+                logging.exception("virtual_sdcard close after error")
+            self.current_file = None
+        self.must_pause_work = False
+        self.cmd_from_sd = False
+        self.calib_wait_flag = False
+        self.calib_done_flag = False
+        try:
+            self.gcode.run_script(self.on_error_gcode.render())
+        except Exception:
+            logging.exception("virtual_sdcard on_error")
+        self.print_stats.note_error(error_message)
+
+    def _work_handler(self, eventtime):
         error_message = None
         logging.info("Starting SD card print (position %d)", self.file_position)
         self.reactor.unregister_timer(self.work_timer)
         try:
             self.current_file.seek(self.file_position)
-        except:
+        except Exception as e:
             logging.exception("virtual_sdcard seek")
-            self.work_timer = None
+            self._abort_sd_print("Unable to seek SD file: %s" % (e,))
             return self.reactor.NEVER
         self.print_stats.note_start()
         gcode_mutex = self.gcode.get_mutex()
@@ -1116,8 +1179,9 @@ class VirtualSD:
                 # Read more data
                 try:
                     data = self.current_file.read(8192)
-                except:
+                except Exception as e:
                     logging.exception("virtual_sdcard read")
+                    error_message = "SD file read failed: %s" % (e,)
                     break
                 if not data:
                     # End of file
@@ -1153,8 +1217,13 @@ class VirtualSD:
                 except:
                     logging.exception("virtual_sdcard on_error")
                 break
-            except:
+            except Exception as e:
                 logging.exception("virtual_sdcard dispatch")
+                error_message = "G-code dispatch failed: %s" % (e,)
+                try:
+                    self.gcode.run_script(self.on_error_gcode.render())
+                except Exception:
+                    logging.exception("virtual_sdcard on_error")
                 break
             self.cmd_from_sd = False
             self.file_position = self.next_file_position
@@ -1162,9 +1231,10 @@ class VirtualSD:
             if self.next_file_position != next_file_position:
                 try:
                     self.current_file.seek(self.file_position)
-                except:
+                except Exception as e:
                     logging.exception("virtual_sdcard seek")
-                    self.work_timer = None
+                    self._abort_sd_print(
+                        "Unable to seek SD file: %s" % (e,))
                     return self.reactor.NEVER
                 lines = []
                 partial_input = ""
@@ -1172,6 +1242,15 @@ class VirtualSD:
         self.work_timer = None
         self.cmd_from_sd = False
         if error_message is not None:
+            if self.current_file is not None:
+                try:
+                    self.current_file.close()
+                except Exception:
+                    logging.exception("virtual_sdcard close after G-code error")
+                self.current_file = None
+            self.must_pause_work = False
+            self.calib_wait_flag = False
+            self.calib_done_flag = False
             self.print_stats.note_error(error_message)
         elif self.current_file is not None:
             self.print_stats.note_pause()

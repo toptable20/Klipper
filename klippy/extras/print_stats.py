@@ -122,6 +122,8 @@ class PrintStats:
         self._note_finish("complete")
     def note_error(self, message):
         self._note_finish("error", message)
+    def note_calibration_error(self, message):
+        self._note_finish("calibration_error", message)
     def note_cancel(self):
         self._note_finish("cancelled")
     def note_set_temperature(self):
