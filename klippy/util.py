@@ -133,6 +133,18 @@ def get_version_from_file(klippy_src):
         pass
     return "?"
 
+def get_shared_software_version(gitdir, component):
+    klipper_root = os.path.abspath(gitdir)
+    version_file = os.path.join(os.path.dirname(klipper_root),
+                                "KlipperScreen", "software_versions.json")
+    try:
+        with open(version_file) as f:
+            version = json.load(f).get(component)
+            return str(version) if version else None
+    except (IOError, ValueError) as e:
+        logging.debug("Unable to read shared software versions: %s", e)
+    return None
+
 def _get_repo_info(gitdir):
     repo_info = {"branch": "?", "remote": "?", "url": "?"}
     prog_branch = ('git', '-C', gitdir, 'branch', '--no-color')
@@ -215,6 +227,9 @@ def get_git_version(from_file=True):
             else:
                 logging.debug("Error getting git status: %s", err)
             git_info.update(_get_repo_info(gitdir))
+            shared_version = get_shared_software_version(gitdir, "klipper")
+            if shared_version:
+                git_info["version"] = shared_version
             return git_info
         else:
             logging.debug("Error getting git version: %s", err)
@@ -222,5 +237,6 @@ def get_git_version(from_file=True):
         logging.debug("Exception on run: %s", traceback.format_exc())
 
     if from_file:
-        git_info["version"] = get_version_from_file(klippy_src)
+        git_info["version"] = (get_shared_software_version(gitdir, "klipper")
+                                or get_version_from_file(klippy_src))
     return git_info
